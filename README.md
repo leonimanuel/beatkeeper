@@ -1,4 +1,4 @@
-# narration-clock
+# beatnik
 
 Resolves which unit of a scripted narration a TTS voice is currently speaking, from the voice's own word stream. Emits an index; renders nothing.
 
@@ -11,13 +11,13 @@ Intended for UIs that change state in step with an agent's speech (maps, charts,
 ## Install
 
 ```bash
-npm install narration-clock
+npm install @leonimanuel/beatnik
 ```
 
 ## Usage
 
 ```ts
-import { createNarrationClock } from "narration-clock";
+import { createNarrationClock } from "@leonimanuel/beatnik";
 
 const clock = createNarrationClock({
   units: beats,                                              // { prose: string, ...anything }[]
@@ -35,7 +35,7 @@ client.on("userStartedSpeaking", () => clock.interrupt());
 With an adapter:
 
 ```ts
-import { fromPipecat } from "narration-clock/pipecat";
+import { fromPipecat } from "@leonimanuel/beatnik/pipecat";
 
 const unbind = fromPipecat(client).bind(clock);
 ```
@@ -43,8 +43,8 @@ const unbind = fromPipecat(client).bind(clock);
 ### React
 
 ```tsx
-import { useNarrationClock } from "narration-clock/react";
-import { fromPipecat } from "narration-clock/pipecat";
+import { useNarrationClock } from "@leonimanuel/beatnik/react";
+import { fromPipecat } from "@leonimanuel/beatnik/pipecat";
 
 const adapter = useMemo(() => fromPipecat(client), [client]);
 const { index, source } = useNarrationClock(beats, { estimate, adapter });
@@ -199,7 +199,7 @@ The Pipecat adapter is exercised in production. The LiveKit, ElevenLabs and AG-U
 ### Pipecat
 
 ```ts
-import { fromPipecat } from "narration-clock/pipecat";
+import { fromPipecat } from "@leonimanuel/beatnik/pipecat";
 fromPipecat(client).bind(clock);
 ```
 
@@ -208,7 +208,7 @@ Binds `botStartedSpeaking`, `botTtsText`, `userStartedSpeaking` on a `PipecatCli
 ### LiveKit
 
 ```ts
-import { fromLiveKit } from "narration-clock/livekit";
+import { fromLiveKit } from "@leonimanuel/beatnik/livekit";
 fromLiveKit(room, { agentIdentity? }).bind(clock);
 ```
 
@@ -217,7 +217,7 @@ Binds `participantAttributesChanged` (`lk.agent.state === "speaking"` starts), `
 ### ElevenLabs
 
 ```ts
-import { fromElevenLabs } from "narration-clock/elevenlabs";
+import { fromElevenLabs } from "@leonimanuel/beatnik/elevenlabs";
 
 const el = fromElevenLabs();
 el.bind(clock);
@@ -241,7 +241,7 @@ emit({ type: "CUSTOM", name: "beat.interrupted" });
 
 ```ts
 // client
-import { fromAgUi } from "narration-clock/ag-ui";
+import { fromAgUi } from "@leonimanuel/beatnik/ag-ui";
 fromAgUi(agent).bind(clock);          // event names configurable via second argument
 ```
 
@@ -280,7 +280,7 @@ onTtsText((text) => clock.feed(text));
 Captions at clause granularity run a second walk over the same stream:
 
 ```ts
-import { SpokenWalk, clauses } from "narration-clock";
+import { SpokenWalk, clauses } from "@leonimanuel/beatnik";
 const captions = new SpokenWalk(beats.flatMap((b) => clauses(b.prose).map((prose) => ({ prose }))), { fireFirst: true });
 onTtsText((text) => { for (const k of captions.feed(text)) show(captions.unit(k)!.prose); });
 ```
