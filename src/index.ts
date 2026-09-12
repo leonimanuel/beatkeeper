@@ -1,5 +1,6 @@
 export { SpokenWalk, type Unit, type WalkOptions } from "./walk.js";
 export {
+  compose,
   createNarrationClock,
   type Adapter,
   type ClockOptions,

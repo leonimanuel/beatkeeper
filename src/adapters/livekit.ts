@@ -38,9 +38,19 @@ export function fromLiveKit<T = unknown>(room: RoomLike, opts: LiveKitOptions = 
         return !opts.agentIdentity || p.identity === opts.agentIdentity;
       };
 
+      let speaking = false;
       const attrs = (changed: Record<string, string>, participant: ParticipantLike) => {
         if (!isAgent(participant)) return;
-        if (changed["lk.agent.state"] === "speaking") clock.start();
+        const state = changed["lk.agent.state"];
+        if (state === undefined) return;
+        if (state === "speaking") {
+          speaking = true;
+          clock.start();
+        } else if (speaking) {
+          // The turn ended; let the next `speaking` start a fresh estimate.
+          speaking = false;
+          clock.stop();
+        }
       };
       const transcription = (segments: SegmentLike[], participant?: ParticipantLike) => {
         if (!isAgent(participant)) return;

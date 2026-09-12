@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createNarrationClock, type ClockOptions, type Timers } from "../src/clock.js";
+import { compose, createNarrationClock, type ClockOptions, type Timers } from "../src/clock.js";
 
 /** A deterministic timer queue, so every test is synchronous. */
 function fakeTimers() {
@@ -271,5 +271,54 @@ describe("walk options pass through", () => {
     expect(log).toEqual([]);
     clock.feed("Kharkiv was");
     expect(log).toEqual(["0:spoken"]);
+  });
+});
+
+describe("hardening", () => {
+  it("leadMs as a function is read per cue", () => {
+    let lead = 100;
+    const { clock, timers, log } = make({ leadMs: () => lead });
+    clock.feed("Good morning On");
+    timers.advance(100);
+    expect(log).toEqual(["1:spoken"]);
+    lead = 500;
+    clock.feed("the 27th a strike hit Orlivka Kharkiv");
+    timers.advance(499);
+    expect(log).toEqual(["1:spoken"]);
+    timers.advance(1);
+    expect(log).toEqual(["1:spoken", "2:spoken"]);
+  });
+
+  it("onAdvance receives the unit", () => {
+    const seen: string[] = [];
+    const clock = createNarrationClock({
+      units: U,
+      timers: fakeTimers(),
+      onAdvance: (_i, _s, u) => seen.push(u.prose),
+    });
+    clock.feed("Good morning On");
+    expect(seen).toEqual(["On the 27th a strike hit Orlivka"]);
+  });
+
+  it("stop() lets start() arm the estimate again for the next turn", () => {
+    const { clock, timers, log } = make({ estimate: perUnit });
+    clock.start();
+    timers.advance(3000);
+    expect(log).toEqual(["1:estimate", "2:estimate", "3:estimate"]);
+    clock.stop();
+    clock.reset(U);
+    clock.start();
+    timers.advance(1000);
+    expect(log.at(-1)).toBe("1:estimate");
+  });
+
+  it("compose binds every adapter and unbinds them all", () => {
+    const calls: string[] = [];
+    const a = { bind: () => { calls.push("bind a"); return () => calls.push("unbind a"); } };
+    const b = { bind: () => { calls.push("bind b"); return () => calls.push("unbind b"); } };
+    const { clock } = make();
+    const unbind = compose(a, b).bind(clock);
+    unbind();
+    expect(calls).toEqual(["bind a", "bind b", "unbind b", "unbind a"]);
   });
 });

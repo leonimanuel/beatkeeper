@@ -60,9 +60,9 @@ The hook owns one clock for the component's lifetime. A `beats` array that exten
 createNarrationClock<T>(options: {
   units?: Unit<T>[];
   estimate?: (unit: Unit<T>, prev: Unit<T> | undefined, index: number) => number;
-  onAdvance: (index: number, source: ClockSource) => void;
+  onAdvance: (index: number, source: ClockSource, unit: Unit<T>) => void;
   onInterrupt?: "hold" | "reset" | ((index: number) => void);  // default "hold"
-  leadMs?: number;                                               // default 0
+  leadMs?: number | (() => number);                              // default 0
   grace?: { baseMs?: number; perWordMs?: number };               // default 1500, 420
   timers?: { setTimeout; clearTimeout; now? };
   // walk options
@@ -70,6 +70,8 @@ createNarrationClock<T>(options: {
   lookahead?: number;                                            // default 8
   overshoot?: number;                                            // default 3
   openWords?: number;                                            // default 1
+  endSlack?: number;                                             // default unbounded
+  normalize?: (token: string) => string;                         // default identity
 }): NarrationClock<T>
 ```
 
@@ -77,26 +79,28 @@ createNarrationClock<T>(options: {
 | ------------- | ----------- |
 | `units`       | Ordered narration units. May be empty and filled with `append()`. |
 | `estimate`    | Expected spoken duration of a unit in ms. Drives the fallback timer clock. Omit to run without one. |
-| `onAdvance`   | Called when the index advances. Indices increase; some may be skipped. `source` is which clock advanced it. |
+| `onAdvance`   | Called when the index advances. Indices increase; some may be skipped. `source` is which clock advanced it; `unit` is the unit reached. |
 | `onInterrupt` | Behaviour on `interrupt()`. `"hold"` keeps the index. `"reset"` returns to the resting index. A function receives the current index. |
-| `leadMs`      | Delay applied to spoken cues. See [Latency](#latency). |
+| `leadMs`      | Delay applied to spoken cues. A function is read per cue, for a delay that changes during the run. See [Latency](#latency). |
 | `grace`       | Wait applied to `hint()` before it is trusted: `baseMs + remaining words in current unit × perWordMs`. |
 | `timers`      | Timer implementation. Inject fakes for synchronous tests. |
 | `fireFirst`   | Report unit 0 when its first word is heard. Off when unit 0 is already on screen before speech. |
 | `lookahead`   | Tokens searched ahead when the next spoken word does not match at the cursor. |
 | `overshoot`   | Unmatched words past the end of the current unit before the next is assumed started. `0` disables. |
 | `openWords`   | Consecutive matching words required before the walk opens. Set above 1 when non-script speech precedes unit 0 in the same stream. |
+| `endSlack`    | How close to the end of the current unit the cursor must be before a lookahead match may land in the next unit. Unbounded by default; set to 2–3 when units open with common words. |
+| `normalize`   | Applied to every token after `tokenize`, script and speech alike. For stemming or number words. |
 
 ### `NarrationClock<T>`
 
 | Member         | Description |
 | -------------- | ----------- |
-| `start()`      | Begins the estimate clock. Call when the bot starts speaking, not when the turn is requested. No-op if no `estimate`. |
+| `start()`      | Begins the estimate clock. Call when the bot starts speaking, not when the turn is requested. No-op if no `estimate`, and no-op while already running — call `stop()` at the end of a turn so the next `start()` arms. |
 | `feed(text)`   | Consumes spoken text — a word, several, or a sentence. Returns indices newly reached. |
 | `append(unit)` | Adds a unit to the end. Units whose `prose` is already present are dropped. Schedules its estimate if that clock is running. |
 | `hint(i)`      | An external source (e.g. the server began synthesising unit `i`) believes `i` has started. Applied after the grace period unless the words arrive first. |
 | `interrupt()`  | Stops both clocks and applies `onInterrupt`. |
-| `stop()`       | Stops both clocks. |
+| `stop()`       | Stops both clocks. Call when the bot stops speaking; the adapters do. |
 | `reset(units)` | Replaces the units and returns to the resting state. Bindings survive. |
 | `index`        | Current index. `-1` before the first unit when `fireFirst` is set. |
 | `source`       | `"spoken"`, `"estimate"`, `"hint"`, `"interrupt"`, or `"idle"`. |
@@ -108,7 +112,7 @@ createNarrationClock<T>(options: {
 The matcher, exported for use without timers (e.g. captions).
 
 ```ts
-new SpokenWalk<T>(units?: Unit<T>[], options?: { fireFirst?, lookahead?, overshoot?, openWords? })
+new SpokenWalk<T>(units?: Unit<T>[], options?: { fireFirst?, lookahead?, overshoot?, openWords?, endSlack?, normalize? })
 ```
 
 | Member         | Description |
@@ -119,12 +123,15 @@ new SpokenWalk<T>(units?: Unit<T>[], options?: { fireFirst?, lookahead?, oversho
 | `unit(i)`      | The unit at `i`. |
 | `reached`      | Highest index reached. |
 | `remaining`    | Tokens of the current unit not yet heard. |
+| `progress`     | Fraction of the current unit heard, 0..1 by token. |
+| `tokens(text)` | `tokenize` followed by the walk's `normalize`. |
 | `length`       | Number of units. |
 
 ### Adapters
 
 ```ts
 type Adapter<T> = { bind(clock: NarrationClock<T>): () => void };
+compose<T>(...adapters: Adapter<T>[]): Adapter<T>   // bind all, unbind all
 ```
 
 ### Helpers
@@ -159,6 +166,7 @@ If no spoken text ever arrives (mock transport, TTS without alignment), the esti
 - **Exact match** advances one position.
 - **Mismatch** searches ahead up to `lookahead` positions for the incoming token. Handles the TTS merging, splitting or skipping tokens.
 - **Prefix match** is accepted within the lookahead only when the incoming token is at least 4 characters and the candidate is at most 4 characters longer. Prevents `"you"` claiming `"youre"`.
+- **Crossing into the next unit** is a lookahead match like any other unless `endSlack` is set, in which case it is accepted only when the cursor is within that many tokens of the current unit's end. Units that open with "The", "And" or "On" want this.
 - **No match** holds position and counts the token toward `overshoot`. Once `overshoot` more words have been heard than the current unit contains, the next unit is assumed started.
 - The reached index is monotonic. A resync never lowers it.
 
@@ -188,7 +196,7 @@ The ElevenLabs adapter is the exception: alignment arrives with the audio chunk 
 
 ### Duplicate units
 
-The same sentence can reach the client twice — once as model output, once as TTS text. `append()` drops a unit whose `prose` already exists, so the second copy cannot strand the walk on tokens the voice will not produce.
+The same sentence can reach the client twice — once as model output, once as TTS text. `append()` drops a unit whose `prose` already exists, so the second copy cannot strand the walk on tokens the voice will not produce. Units passed to the constructor are the script and are kept as given, repeats included.
 
 ## Adapters
 
@@ -203,7 +211,7 @@ import { fromPipecat } from "beatkeeper/pipecat";
 fromPipecat(client).bind(clock);
 ```
 
-Binds `botStartedSpeaking`, `botTtsText`, `userStartedSpeaking` on a `PipecatClient`. Requires TTS alignment forwarding on the server-side TTS service. If you use constructor `callbacks` rather than `client.on`, call the clock methods from `onBotStartedSpeaking`, `onBotTtsText` and `onUserStartedSpeaking` directly.
+Binds `botStartedSpeaking` (start), `botTtsText` (feed), `botStoppedSpeaking` (stop) and `userStartedSpeaking` (interrupt) on a `PipecatClient`. Requires TTS alignment forwarding on the server-side TTS service. If you use constructor `callbacks` rather than `client.on`, call the clock methods from `onBotStartedSpeaking`, `onBotTtsText`, `onBotStoppedSpeaking` and `onUserStartedSpeaking` directly.
 
 ### LiveKit
 
@@ -212,7 +220,7 @@ import { fromLiveKit } from "beatkeeper/livekit";
 fromLiveKit(room, { agentIdentity? }).bind(clock);
 ```
 
-Binds `participantAttributesChanged` (`lk.agent.state === "speaking"` starts), `transcriptionReceived` (agent segments fed; only the appended suffix of a growing segment), `activeSpeakersChanged` (local participant speaking interrupts). Requires `use_tts_aligned_transcript=True` on the `AgentSession`.
+Binds `participantAttributesChanged` (`lk.agent.state === "speaking"` starts; leaving it stops), `transcriptionReceived` (agent segments fed; only the appended suffix of a growing segment), `activeSpeakersChanged` (local participant speaking interrupts). Requires `use_tts_aligned_transcript=True` on the `AgentSession`.
 
 ### ElevenLabs
 
@@ -267,7 +275,7 @@ createNarrationClock({ units, estimate, onAdvance })
 **Per-beat cursor with overshoot and a server `beat-start` message** (no timers; the server hint fills in when the words are unrecognisable):
 
 ```ts
-const clock = createNarrationClock({ units: [], fireFirst: true, openWords: 2, onAdvance });
+const clock = createNarrationClock({ units: [], fireFirst: true, openWords: 2, endSlack: 2, onAdvance });
 onServerMessage((m) => {
   if (m.type === "beat")       clock.append(m.beat);
   if (m.type === "beat-start") clock.hint(m.index);
@@ -275,7 +283,7 @@ onServerMessage((m) => {
 onTtsText((text) => clock.feed(text));
 ```
 
-`fireFirst: true` because the first beat is withheld from the screen until its first word; `openWords: 2` because a status line precedes it in the same stream and may name the same place.
+`fireFirst: true` because the first beat is withheld from the screen until its first word; `openWords: 2` because a status line precedes it in the same stream and may name the same place; `endSlack: 2` reproduces that matcher's rule that a next-beat first word is only believed near the end of the current beat.
 
 Captions at clause granularity run a second walk over the same stream:
 

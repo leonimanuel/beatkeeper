@@ -174,3 +174,51 @@ describe("SpokenWalk", () => {
     expect(w.remaining).toBe(0);
   });
 });
+
+describe("script fidelity and options", () => {
+  it("keeps a repeated sentence given up front, and fires it twice", () => {
+    const w = new SpokenWalk([{ prose: "He said no." }, { prose: "Then again." }, { prose: "He said no." }]);
+    expect(w.length).toBe(3);
+    expect(speak(w, "He said no. Then again. He said no.")).toEqual([1, 2]);
+  });
+
+  it("still drops an appended duplicate", () => {
+    const w = new SpokenWalk([{ prose: "He said no." }]);
+    w.append({ prose: "He said no." });
+    expect(w.length).toBe(1);
+  });
+
+  it("normalize applies to script and speech alike", () => {
+    const words: Record<string, string> = { twelfth: "12th" };
+    const w = new SpokenWalk(
+      [{ prose: "Saturday, September 12th." }, { prose: "Morning." }],
+      { normalize: (t) => words[t] ?? t },
+    );
+    expect(speak(w, "Saturday September twelfth Morning")).toEqual([1]);
+    expect(w.remaining).toBe(0);
+  });
+
+  it("endSlack: a stray first word of the next unit does not jump the walk early", () => {
+    const units = [{ prose: "a b c d e f g h" }, { prose: "the x y" }];
+    expect(speak(new SpokenWalk(units), "a b the")).toEqual([1]);
+    const w = new SpokenWalk(units, { endSlack: 2 });
+    expect(speak(w, "a b the")).toEqual([]);
+    expect(speak(w, "c d e f g the")).toEqual([1]);
+  });
+
+  it("endSlack does not stop resync within the current unit", () => {
+    const w = new SpokenWalk([{ prose: "a b c d e f" }, { prose: "x y" }], { endSlack: 1 });
+    expect(speak(w, "a d")).toEqual([]);
+    expect(w.remaining).toBe(2);
+  });
+
+  it("progress reports the fraction of the current unit heard", () => {
+    const w = new SpokenWalk([{ prose: "one two three four" }, { prose: "five" }]);
+    expect(w.progress).toBe(0);
+    speak(w, "one two");
+    expect(w.progress).toBe(0.5);
+    speak(w, "three four five");
+    expect(w.reached).toBe(1);
+    expect(w.progress).toBe(1);
+  });
+});

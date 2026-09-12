@@ -23,6 +23,20 @@ export type WalkOptions = {
    * and may contain its words.
    */
   openWords?: number;
+  /**
+   * How close to the end of the current unit the cursor must be before a
+   * lookahead match is allowed to land in the NEXT unit. Default unbounded,
+   * so a match anywhere within `lookahead` counts. Set to 2 or 3 when units
+   * begin with common words ("The", "And", "On"): a stray one spoken early
+   * would otherwise jump the walk a unit ahead.
+   */
+  endSlack?: number;
+  /**
+   * Applied to every token, script and spoken alike, after `tokenize`. For
+   * stemming, number words, or a language whose inflections defeat the
+   * prefix rule. Identity by default.
+   */
+  normalize?: (token: string) => string;
 };
 
 const DEFAULTS: Required<WalkOptions> = {
@@ -30,6 +44,8 @@ const DEFAULTS: Required<WalkOptions> = {
   lookahead: 8,
   overshoot: 3,
   openWords: 1,
+  endSlack: Infinity,
+  normalize: (t) => t,
 };
 
 export function stripUndefined<T extends object>(o: T): Partial<T> {
@@ -57,23 +73,38 @@ export class SpokenWalk<T = unknown> {
   /** Tentative run length while not yet open. */
   private tent = 0;
 
+  /**
+   * Units given here are the script and are taken as they are, repeats
+   * included — a narration may say the same short sentence twice and mean
+   * it twice. Only `append` de-duplicates.
+   */
   constructor(units: Unit<T>[] = [], options: WalkOptions = {}) {
     this.opts = { ...DEFAULTS, ...stripUndefined(options) };
     this.fired = this.opts.fireFirst ? -1 : 0;
     this.open = this.opts.openWords <= 1;
-    for (const u of units) this.append(u);
+    for (const u of units) this.push(u);
+  }
+
+  /** `tokenize`, then the caller's normaliser. */
+  tokens(text: string): string[] {
+    return tokenize(text).map(this.opts.normalize);
   }
 
   /**
    * Add a unit to the end. A unit whose prose is already present is dropped:
-   * the same sentence can reach the client twice, and a copy would strand the
-   * walk on tokens the voice never produces.
+   * a streamed sentence can reach the client twice (once as the model's text,
+   * once as the TTS's), and a copy would strand the walk on tokens the voice
+   * never produces.
    */
   append(unit: Unit<T>): void {
     if (this.units.some((u) => u.prose === unit.prose)) return;
+    this.push(unit);
+  }
+
+  private push(unit: Unit<T>): void {
     this.units.push(unit);
     this.starts.push(this.seq.length);
-    this.seq.push(...tokenize(unit.prose));
+    this.seq.push(...this.tokens(unit.prose));
   }
 
   /** Highest index reached. -1 before the first hit when `fireFirst` is set. */
@@ -102,6 +133,19 @@ export class SpokenWalk<T = unknown> {
   }
 
   /**
+   * How far through the current unit the voice is, 0..1 by token count. 0
+   * before any unit is reached; 1 for an empty unit.
+   */
+  get progress(): number {
+    if (this.fired < 0) return 0;
+    const start = this.starts[this.fired];
+    const end = this.starts[this.fired + 1] ?? this.seq.length;
+    const total = end - start;
+    if (total <= 0) return 1;
+    return Math.min(1, Math.max(0, this.pos - start) / total);
+  }
+
+  /**
    * Move the cursor to the start of unit `i` and mark everything up to it
    * reached. Returns the indices newly fired. Used by external hints.
    */
@@ -125,7 +169,7 @@ export class SpokenWalk<T = unknown> {
    */
   feed(text: string): number[] {
     const out: number[] = [];
-    for (const tok of tokenize(text)) {
+    for (const tok of this.tokens(text)) {
       if (this.open) this.advance(tok);
       else if (!this.opening(tok)) continue;
       while (
@@ -163,7 +207,7 @@ export class SpokenWalk<T = unknown> {
   }
 
   private advance(tok: string): void {
-    const { lookahead, overshoot } = this.opts;
+    const { lookahead, overshoot, endSlack } = this.opts;
     if (this.seq[this.pos] === tok) {
       this.pos += 1;
       this.slack = 0;
@@ -173,8 +217,14 @@ export class SpokenWalk<T = unknown> {
     // partial token ("onepointseven" arriving as "one") matches by prefix,
     // but only a substantial one: "you" must not claim "youre", or a stray
     // short word jumps the walk into the wrong sentence.
+    //
+    // A match that lies in the NEXT unit is a claim that this unit is over.
+    // With `endSlack` set, that claim is only believed near the end of it.
+    const end = this.starts[Math.max(this.fired, 0) + 1] ?? this.seq.length;
+    const nearEnd = end - this.pos <= endSlack;
     const limit = Math.min(this.seq.length, this.pos + lookahead);
     for (let i = this.pos; i < limit; i++) {
+      if (i >= end && !nearEnd) break;
       const want = this.seq[i];
       if (
         want === tok ||

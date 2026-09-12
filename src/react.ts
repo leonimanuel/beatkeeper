@@ -16,10 +16,12 @@ export type HookOptions<T = unknown> = Omit<ClockOptions<T>, "units" | "onAdvanc
 
 /**
  * Whether `next` is `prev` with more units on the end — the same narration,
- * grown — rather than a different one. Compared by element reference.
+ * grown — rather than a different one. Compared by prose, not by reference:
+ * a refetch that yields equal units as new objects is the same narration, and
+ * resetting on it would restart the picture mid-sentence.
  */
 export function extendsNarrative<T>(prev: Unit<T>[], next: Unit<T>[]): boolean {
-  return next.length >= prev.length && prev.every((u, i) => next[i] === u);
+  return next.length >= prev.length && prev.every((u, i) => next[i] === u || next[i]?.prose === u.prose);
 }
 
 /**
@@ -45,9 +47,9 @@ export function useNarrationClock<T = unknown>(
       ...rest,
       units: [],
       estimate: estimate ? (u, p, i) => optsRef.current.estimate!(u, p, i) : undefined,
-      onAdvance: (i, s) => {
+      onAdvance: (i, s, u) => {
         setState({ index: i, source: s });
-        optsRef.current.onAdvance?.(i, s);
+        optsRef.current.onAdvance?.(i, s, u);
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps

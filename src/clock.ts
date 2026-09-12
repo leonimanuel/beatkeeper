@@ -14,6 +14,22 @@ export type Adapter<T = unknown> = {
   bind(clock: NarrationClock<T>): () => void;
 };
 
+/**
+ * One adapter from several: each is bound in order, and unbinding unbinds
+ * them all. For the common pair — a transport's word stream plus a server
+ * channel carrying units and hints.
+ */
+export function compose<T = unknown>(...adapters: Adapter<T>[]): Adapter<T> {
+  return {
+    bind(clock) {
+      const unbinds = adapters.map((a) => a.bind(clock));
+      return () => {
+        for (const u of unbinds.reverse()) u();
+      };
+    },
+  };
+}
+
 export type ClockOptions<T = unknown> = WalkOptions & {
   units?: Unit<T>[];
   /**
@@ -22,14 +38,18 @@ export type ClockOptions<T = unknown> = WalkOptions & {
    */
   estimate?: (unit: Unit<T>, prev: Unit<T> | undefined, index: number) => number;
   /** Called when the index advances. Increasing; indices may be skipped. */
-  onAdvance: (index: number, source: ClockSource) => void;
+  onAdvance: (index: number, source: ClockSource, unit: Unit<T>) => void;
   /**
    * Behaviour on `interrupt()`. "hold" keeps the current index. "reset"
    * returns to the resting index. A function receives the current index.
    */
   onInterrupt?: "hold" | "reset" | ((index: number) => void);
-  /** Delay applied to spoken cues before they take effect. Default 0. */
-  leadMs?: number;
+  /**
+   * Delay applied to spoken cues before they take effect. Default 0. A
+   * function is read per cue, for a delay that changes during the run — the
+   * audio the client still holds unplayed, say.
+   */
+  leadMs?: number | (() => number);
   /** Grace period for `hint()`: base plus per-remaining-word of the current unit. */
   grace?: { baseMs?: number; perWordMs?: number };
   timers?: Timers;
@@ -83,13 +103,17 @@ const defaultTimers: Required<Timers> = {
  */
 export function createNarrationClock<T = unknown>(o: ClockOptions<T>): NarrationClock<T> {
   const timers: Required<Timers> = { ...defaultTimers, ...stripUndefined(o.timers ?? {}) };
-  const leadMs = o.leadMs ?? 0;
+  const rawLead = o.leadMs;
+  const fixedLead = typeof rawLead === "number" ? rawLead : 0;
+  const leadMs: () => number = typeof rawLead === "function" ? rawLead : () => fixedLead;
   const grace = { baseMs: 1500, perWordMs: 420, ...stripUndefined(o.grace ?? {}) };
   const walkOpts: WalkOptions = {
     fireFirst: o.fireFirst,
     lookahead: o.lookahead,
     overshoot: o.overshoot,
     openWords: o.openWords,
+    endSlack: o.endSlack,
+    normalize: o.normalize,
   };
   /** The first index the clock will ever report. */
   const first = o.fireFirst ? 0 : 1;
@@ -127,7 +151,7 @@ export function createNarrationClock<T = unknown>(o: ClockOptions<T>): Narration
     if (i <= index || i >= walk.length) return;
     index = i;
     source = from;
-    o.onAdvance(i, from);
+    o.onAdvance(i, from, walk.unit(i)!);
   };
 
   const scheduleEstimates = () => {
@@ -164,11 +188,12 @@ export function createNarrationClock<T = unknown>(o: ClockOptions<T>): Narration
       }
       clearGrace();
       for (const k of hits) {
-        if (leadMs > 0) {
+        const lead = leadMs();
+        if (lead > 0) {
           const id = timers.setTimeout(() => {
             leadTimers.delete(id);
             advance(k, "spoken");
-          }, leadMs);
+          }, lead);
           leadTimers.add(id);
         } else {
           advance(k, "spoken");
@@ -205,7 +230,7 @@ export function createNarrationClock<T = unknown>(o: ClockOptions<T>): Narration
         source = "interrupt";
         // When unit 0 is the resting state, say so; when nothing is shown
         // before the first word, there is nothing to show.
-        if (first === 1) o.onAdvance(0, "interrupt");
+        if (first === 1 && walk.length > 0) o.onAdvance(0, "interrupt", walk.unit(0)!);
         return;
       }
       policy(index);
