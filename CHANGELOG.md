@@ -9,123 +9,95 @@ live**. Pin a minor range until 1.0.
 
 ## [Unreleased]
 
-### Added
+## [0.1.0] — 2026-09-13
 
-- CI on every push and pull request: typecheck, build and tests on Node 22 and
-  24, then the packed tarball installed and imported on Node 18, 20, 22 and 24.
-  The smoke job makes `engines: node >=18` a tested claim rather than an
-  assertion, and catches a broken `exports` map — otherwise invisible until
-  someone installs the package.
-- `repository`, `bugs` and `homepage` metadata, `engines: node >=18`, and a
-  `typecheck` script.
-- Contributing guide, code of conduct, security policy, and issue and pull
-  request templates.
-
-### Fixed
-
-- `src` is now published. `declarationMap` and `sourceMap` were on while
-  `files` listed only `dist`, so every `.d.ts.map` and `.js.map` pointed at
-  `../src/*.ts` — a path absent from the tarball. Go-to-definition and stack
-  traces dead-ended for consumers. Adds ~10 kB packed.
-- The lockfile said `0.1.0` while `package.json` said `0.3.0`.
-
-### Changed
-
-- Removed the `prepare` script. `prepublishOnly` already covers publishing,
-  while `prepare` additionally fired on consumer installs from a git URL, where
-  devDependencies are not guaranteed. `prepublishOnly` now also runs the tests.
-
-## [0.3.0] — unreleased publicly
-
-The first version intended for npm. Everything below predates the initial
-publish and is recorded for provenance rather than upgrade guidance.
+First public release.
 
 ### Added
 
-- `fromElevenLabs({ audioTime })` schedules words against the **audio** clock
-  instead of the wall clock. Given a playhead position in stream ms, a word is
-  fed once the playhead reaches its offset. Previously each word was scheduled
-  once at a wall-clock instant computed from `playbackStarted()`, so a
-  buffering stall, a suspended `AudioContext`, or a backgrounded tab with
-  throttled timers landed words while different audio — or none — was audible.
+- **`createNarrationClock`** — resolves which unit of a scripted narration a TTS
+  voice is currently speaking, from its word stream. Emits an index; renders
+  nothing and touches no audio. `start()`, `feed()`, `stop()`, `interrupt()`
+  and `sync()`; `onAdvance` runs synchronously inside `feed()`.
+- **`SpokenWalk`** — the matcher underneath, usable on its own.
+- **Adapters** for Pipecat, LiveKit, ElevenLabs and AG-UI, each on its own
+  export subpath and each free of runtime dependencies.
+  - `fromElevenLabs({ audioTime })` schedules words against the **audio** clock
+    rather than the wall clock: given a playhead position in stream ms, a word
+    is fed once the playhead reaches its offset. A buffering stall, a suspended
+    `AudioContext`, or a backgrounded tab with throttled timers no longer lands
+    words while different audio — or none — is audible. Opt-in; the wall-clock
+    path is unchanged.
+- **`useNarrationClock`** React hook, on `beatkeeper/react`. React is an
+  optional peer dependency.
+- **`compose()`** to join adapters, and `withHints()` / `clauses()` /
+  `tokenize()` helpers.
 
-  A single poll is armed only while a word is pending and sleeps the shorter of
-  20 ms and the time to the next word. With a playhead that keeps pace, beats
-  land on the same millisecond as the wall-clock path (871/2566 ms and
-  1040/2600 ms against live captures); during a stall nothing is fed until the
-  playhead moves again. `interrupted()` cancels the poll and drops pending
-  words.
+### Packaging
 
-  Opt-in. The wall-clock path and the existing API are unchanged.
+- Zero runtime dependencies. Node 18+, verified in CI by installing the packed
+  tarball and importing every export subpath on Node 18, 20, 22 and 24.
+- Ships `src` alongside `dist` so the declaration and source maps resolve.
+- Published from GitHub Actions with npm provenance.
 
-### Changed
+---
 
-- `start()` now **resumes** the estimate clock where `stop()` or `interrupt()`
-  paused it, instead of rescheduling every unit from zero. Binding the pair to
-  a pipeline's per-utterance events (Pipecat `botStoppedSpeaking`, LiveKit
-  agent state) was unsafe before this: the second utterance waited out the
-  whole narration again.
-- Pending ElevenLabs words are kept in stream order, so interleaved dialogue
-  contexts are fed in order from the front.
-- README rewritten around the five problems beatkeeper solves, with real
-  payloads from Pipecat, the ElevenLabs websocket and HTTP APIs, and LiveKit.
-  Documents that `onAdvance` runs synchronously inside `feed()`.
+## Pre-release history
 
-## [0.2.0] — unreleased publicly
+Version numbers `0.1.0` through `0.3.0` appear in the git history but were
+**never published to npm** — the release above reuses `0.1.0` as the first
+public version. This section is provenance, not upgrade guidance; it is kept
+because the measurements are the argument for the fixes.
 
-### Fixed
+### ElevenLabs per-message character offsets
 
-- **ElevenLabs per-message character offsets.** ElevenLabs restarts
-  `char_start_times_ms` at zero in every websocket message; the adapter read
-  them as offsets from playback start, so every message after the first
-  scheduled its words against the wrong origin. Because synthesis outruns
-  playback, those messages are all in hand within a second or two — the walk
-  raced to the last beat while the voice was still on the first. Beat 1 fired
-  36 ms into a 4.2-second narration.
+ElevenLabs restarts `char_start_times_ms` at zero in every websocket message.
+The adapter read them as offsets from playback start, so every message after
+the first scheduled its words against the wrong origin. Because synthesis
+outruns playback, those messages are all in hand within a second or two — the
+walk raced to the last beat while the voice was still on the first. Beat 1
+fired 36 ms into a 4.2-second narration.
 
-  Offsets are now accumulated: each message's span — its last character's start
-  plus that character's duration — is added as the message is consumed. The
-  span is added even when a message completes no word, because trailing
-  punctuation arrives in a message of its own, and skipping it pulls every
-  later word early by the shortfall.
+Offsets are now accumulated: each message's span — its last character's start
+plus that character's duration — is added as the message is consumed. The span
+is added even when a message completes no word, because trailing punctuation
+arrives in a message of its own, and skipping it pulls every later word early
+by the shortfall.
 
-  | | beat 1 | beat 2 | total audio |
-  | --- | --- | --- | --- |
-  | `/stream-input`, before | 174 ms | 1637 ms | 3994 ms |
-  | `/stream-input`, after | 871 ms | 2566 ms | 3994 ms |
-  | `text-to-dialogue`, before | 36 ms | 840 ms | 4160 ms |
-  | `text-to-dialogue`, after | 1040 ms | 2600 ms | 4160 ms |
+| | beat 1 | beat 2 | total audio |
+| --- | --- | --- | --- |
+| `/stream-input`, before | 174 ms | 1637 ms | 3994 ms |
+| `/stream-input`, after | 871 ms | 2566 ms | 3994 ms |
+| `text-to-dialogue`, before | 36 ms | 840 ms | 4160 ms |
+| `text-to-dialogue`, after | 1040 ms | 2600 ms | 4160 ms |
 
-- Assembly is keyed by context, so interleaved dialogue does not cross-
-  contaminate.
+Assembly is keyed by context, so interleaved dialogue does not
+cross-contaminate.
 
-### Changed
+### `audioTime`
 
-- The walk trusts the script: units given to the constructor are kept as given,
-  repeats included; only `append()` de-duplicates.
-- One re-anchor instead of continuous re-anchoring.
-- Timing moved into the adapters.
-- Pipecat binds `botStoppedSpeaking` → `stop()`; LiveKit stops on leaving the
-  speaking state. Without a stop, `start()` was a no-op for every turn after
-  the first.
-- `extendsNarrative` compares by prose, so a refetch yielding equal units as
-  new objects no longer resets the picture mid-sentence.
-- `onAdvance` receives the unit; `leadMs` may be a function read per cue.
+With a playhead that keeps pace, beats land on the same millisecond as the
+wall-clock path (871/2566 ms and 1040/2600 ms against the live captures);
+during a stall nothing is fed until the playhead moves again. A single poll is
+armed only while a word is pending and sleeps the shorter of 20 ms and the time
+to the next word. `interrupted()` cancels the poll and drops pending words.
 
-### Added
+### `start()` resumes the estimate clock
 
-- `compose()` joins adapters.
+`start()` resumes where `stop()` or `interrupt()` paused it, instead of
+rescheduling every unit from zero. Binding the pair to a pipeline's
+per-utterance events (Pipecat `botStoppedSpeaking`, LiveKit agent state) was
+unsafe before this: the second utterance waited out the whole narration again.
 
-## [0.1.0] — unreleased publicly
+### Matching
 
-### Added
+The walk trusts the script — units given to the constructor are kept as given,
+repeats included, and only `append()` de-duplicates. One re-anchor rather than
+continuous re-anchoring. Timing moved into the adapters. Pipecat binds
+`botStoppedSpeaking` → `stop()` and LiveKit stops on leaving the speaking
+state; without a stop, `start()` was a no-op for every turn after the first.
+`extendsNarrative` compares by prose, so a refetch yielding equal units as new
+objects no longer resets the picture mid-sentence.
 
-- Initial implementation: resolve which unit of a scripted narration a TTS
-  voice is speaking, from its word stream. Emits an index; renders nothing.
-- Adapters for Pipecat, LiveKit, ElevenLabs and AG-UI.
-- React hook, `useNarrationClock`.
-
-[Unreleased]: https://github.com/leonimanuel/beatkeeper/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/leonimanuel/beatkeeper/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/leonimanuel/beatkeeper/compare/v0.1.0...v0.2.0
+[Unreleased]: https://github.com/leonimanuel/beatkeeper/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/leonimanuel/beatkeeper/releases/tag/v0.1.0
