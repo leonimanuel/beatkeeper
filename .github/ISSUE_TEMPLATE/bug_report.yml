@@ -1,0 +1,80 @@
+name: Bug report
+description: The index went somewhere you did not expect
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        beatkeeper turns a stream of words into an index, so a report is only
+        actionable with the stream attached. "It desyncs sometimes" has at
+        least five distinct causes with five different fixes — the fields below
+        are what separate them.
+
+  - type: textarea
+    id: beats
+    attributes:
+      label: Your beats
+      description: The `units` you passed. Only `prose` matters — strip anything private.
+      render: ts
+      placeholder: |
+        const beats = [
+          { prose: "Fighting increased near Pokrovsk." },
+          { prose: "Further south, activity shifted toward Zaporizhzhia." },
+        ];
+    validations:
+      required: true
+
+  - type: textarea
+    id: stream
+    attributes:
+      label: The words that arrived
+      description: >
+        In the order your stack delivered them. Raw payloads are ideal — they
+        show the shape as well as the content.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: expected
+    attributes:
+      label: Expected index
+      description: Which beat should have been current, and after which word?
+    validations:
+      required: true
+
+  - type: input
+    id: actual
+    attributes:
+      label: Actual index
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stack
+    attributes:
+      label: Voice stack
+      options:
+        - Pipecat
+        - LiveKit
+        - ElevenLabs
+        - AG-UI
+        - Other / custom (describe below)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: beatkeeper version
+      placeholder: 0.3.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: >
+        Interruptions, a stalled stream, a voice that improvised off-script,
+        audio timestamps in play — all change which code path you are on.
