@@ -4,6 +4,12 @@
   "description": "Resolve which unit of a scripted narration a TTS voice is speaking, from its word stream. Emits an index; renders nothing.",
   "license": "MIT",
   "author": "Leon Malisov",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leonimanuel/beatkeeper.git"
+  },
+  "bugs": "https://github.com/leonimanuel/beatkeeper/issues",
+  "homepage": "https://github.com/leonimanuel/beatkeeper#readme",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -42,15 +48,19 @@
   },
   "files": [
     "dist",
+    "src",
     "README.md",
     "LICENSE"
   ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run clean && npm run build",
+    "prepublishOnly": "npm run clean && npm run build && npm test",
     "test": "vitest run",
-    "prepare": "npm run build"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "peerDependencies": {
     "react": ">=18"
