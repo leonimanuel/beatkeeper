@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { createNarrationClock } from "../src/clock.js";
 import { fromElevenLabs, type ElevenLabsMessage } from "../src/adapters/elevenlabs.js";
-import { fakeTimers } from "./clock.test.js";
+import { fakeTimers } from "./timers.js";
 
 /**
  * Captured live from both sockets. See the fixtures' own `_comment`: the

@@ -44,7 +44,10 @@ export type ClockOptions<T = unknown> = WalkOptions & {
 };
 
 export type NarrationClock<T = unknown> = {
-  /** Begin the estimate clock. Call when the bot starts speaking. */
+  /**
+   * Begin the estimate clock, or resume it after `stop()`/`interrupt()` from
+   * where it paused. Call when the bot starts speaking.
+   */
   start(): void;
   /** Spoken text, as it becomes audible. */
   feed(text: string): void;
@@ -55,9 +58,9 @@ export type NarrationClock<T = unknown> = {
    * the walk there. Not a guess: for a source that knows.
    */
   sync(index: number): void;
-  /** Barge-in. Stops the clocks and holds the index. */
+  /** Barge-in. Pauses the estimate clock and holds the index. */
   interrupt(): void;
-  /** Stop both clocks. Call when the bot stops speaking. */
+  /** Pause the estimate clock. Call when the bot stops speaking; `start()` resumes. */
   stop(): void;
   /** Replace the units and return to the resting state. */
   reset(units?: Unit<T>[]): void;
@@ -82,7 +85,10 @@ const defaultTimers: Required<Timers> = {
  *
  * The ESTIMATE starts on `start()` and schedules each unit at the cumulative
  * `estimate()` of the units before it. It is wrong by however much the
- * voice's real pace differs, and the error accumulates.
+ * voice's real pace differs, and the error accumulates. `stop()` pauses it
+ * and the next `start()` resumes it where it was: a stop between two
+ * utterances of one narration (pipecat's `botStoppedSpeaking`, LiveKit's
+ * agent state) must not restart the schedule from the first unit.
  *
  * The SPOKEN clock is the word stream through `feed()`. On the first unit it
  * reaches, every pending estimate timer is cancelled and the estimate does not
@@ -104,14 +110,26 @@ export function createNarrationClock<T = unknown>(o: ClockOptions<T>): Narration
   let source: ClockSource | "idle" = "idle";
   let running = false;
   let cued = false;
-  let startedAt = 0;
-  let cumulative = 0;
-  let scheduledThrough = -1;
-  const estimateTimers = new Set<unknown>();
+  /** When the narration's spoken time began; shifted forward by every pause. */
+  let startedAt: number | null = null;
+  /** When `stop()`/`interrupt()` paused the estimate, until the next `start()`. */
+  let pausedAt: number | null = null;
+  /** Offset of each unit from `startedAt`, by the estimates of the units before it. */
+  const offsets: number[] = [];
+  /** Pending estimate timers, by unit index. */
+  const estimateTimers = new Map<number, unknown>();
 
   const clearEstimates = () => {
-    for (const id of estimateTimers) timers.clearTimeout(id);
+    for (const id of estimateTimers.values()) timers.clearTimeout(id);
     estimateTimers.clear();
+  };
+
+  const offsetOf = (k: number): number => {
+    while (offsets.length <= k) {
+      const n = offsets.length;
+      offsets.push(n === 0 ? 0 : offsets[n - 1] + o.estimate!(walk.unit(n - 1)!, walk.unit(n - 2), n - 1));
+    }
+    return offsets[k];
   };
 
   /** Monotonic: a resync never lowers the index. */
@@ -122,28 +140,34 @@ export function createNarrationClock<T = unknown>(o: ClockOptions<T>): Narration
     o.onAdvance(i, from, walk.unit(i)!);
   };
 
+  /** Arm a timer for every unit not yet reached and not yet armed. */
   const scheduleEstimates = () => {
-    if (!o.estimate || !running || cued) return;
-    for (let k = scheduledThrough + 1; k < walk.length; k++) {
-      if (k > 0) cumulative += o.estimate(walk.unit(k - 1)!, walk.unit(k - 2), k - 1);
-      scheduledThrough = k;
-      if (k < first) continue;
-      const delay = Math.max(0, startedAt + cumulative - timers.now());
+    if (!o.estimate || !running || cued || startedAt === null) return;
+    for (let k = Math.max(index + 1, first); k < walk.length; k++) {
+      if (estimateTimers.has(k)) continue;
+      const delay = Math.max(0, startedAt + offsetOf(k) - timers.now());
       const id = timers.setTimeout(() => {
-        estimateTimers.delete(id);
+        estimateTimers.delete(k);
         advance(k, "estimate");
       }, delay);
-      estimateTimers.add(id);
+      estimateTimers.set(k, id);
     }
+  };
+
+  const pause = () => {
+    clearEstimates();
+    if (running) pausedAt = timers.now();
+    running = false;
   };
 
   return {
     start() {
       if (running) return;
       running = true;
-      startedAt = timers.now();
-      cumulative = 0;
-      scheduledThrough = -1;
+      const now = timers.now();
+      if (startedAt === null) startedAt = now;
+      else if (pausedAt !== null) startedAt += now - pausedAt;
+      pausedAt = null;
       scheduleEstimates();
     },
 
@@ -173,13 +197,11 @@ export function createNarrationClock<T = unknown>(o: ClockOptions<T>): Narration
     },
 
     interrupt() {
-      clearEstimates();
-      running = false;
+      pause();
     },
 
     stop() {
-      clearEstimates();
-      running = false;
+      pause();
     },
 
     reset(units = []) {
@@ -189,8 +211,9 @@ export function createNarrationClock<T = unknown>(o: ClockOptions<T>): Narration
       source = "idle";
       running = false;
       cued = false;
-      cumulative = 0;
-      scheduledThrough = -1;
+      startedAt = null;
+      pausedAt = null;
+      offsets.length = 0;
     },
 
     get index() {
