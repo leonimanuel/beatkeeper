@@ -1,8 +1,9 @@
 import { SpokenWalk, stripUndefined, type Unit, type WalkOptions } from "./walk.js";
 
 /** Which clock advanced the index. */
-export type ClockSource = "spoken" | "estimate" | "hint" | "interrupt";
+export type ClockSource = "spoken" | "estimate" | "sync";
 
+/** Timer functions. Inject fakes for synchronous tests. */
 export type Timers = {
   setTimeout: (fn: () => void, ms: number) => unknown;
   clearTimeout: (id: unknown) => void;
@@ -16,8 +17,8 @@ export type Adapter<T = unknown> = {
 
 /**
  * One adapter from several: each is bound in order, and unbinding unbinds
- * them all. For the common pair — a transport's word stream plus a server
- * channel carrying units and hints.
+ * them all. For a transport's word stream plus a server channel carrying
+ * units.
  */
 export function compose<T = unknown>(...adapters: Adapter<T>[]): Adapter<T> {
   return {
@@ -39,45 +40,35 @@ export type ClockOptions<T = unknown> = WalkOptions & {
   estimate?: (unit: Unit<T>, prev: Unit<T> | undefined, index: number) => number;
   /** Called when the index advances. Increasing; indices may be skipped. */
   onAdvance: (index: number, source: ClockSource, unit: Unit<T>) => void;
-  /**
-   * Behaviour on `interrupt()`. "hold" keeps the current index. "reset"
-   * returns to the resting index. A function receives the current index.
-   */
-  onInterrupt?: "hold" | "reset" | ((index: number) => void);
-  /**
-   * Delay applied to spoken cues before they take effect. Default 0. A
-   * function is read per cue, for a delay that changes during the run — the
-   * audio the client still holds unplayed, say.
-   */
-  leadMs?: number | (() => number);
-  /** Grace period for `hint()`: base plus per-remaining-word of the current unit. */
-  grace?: { baseMs?: number; perWordMs?: number };
   timers?: Timers;
 };
 
 export type NarrationClock<T = unknown> = {
   /** Begin the estimate clock. Call when the bot starts speaking. */
   start(): void;
-  /** Spoken text in. Returns indices newly reached. */
-  feed(text: string): number[];
+  /** Spoken text, as it becomes audible. */
+  feed(text: string): void;
   /** Add a unit to the end. Schedules its estimate if that clock is running. */
   append(unit: Unit<T>): void;
   /**
-   * An external source believes unit `index` has started (e.g. the server
-   * began synthesising it). Trusted only after the spoken clock has had a
-   * grace period to see the words itself.
+   * The caller asserts that unit `index` is the one being heard. Re-anchors
+   * the walk there. Not a guess: for a source that knows.
    */
-  hint(index: number): void;
-  /** Stop both clocks and apply `onInterrupt`. */
+  sync(index: number): void;
+  /** Barge-in. Stops the clocks and holds the index. */
   interrupt(): void;
-  /** Stop both clocks. */
+  /** Stop both clocks. Call when the bot stops speaking. */
   stop(): void;
   /** Replace the units and return to the resting state. */
   reset(units?: Unit<T>[]): void;
   readonly index: number;
   readonly source: ClockSource | "idle";
   readonly running: boolean;
-  readonly walk: SpokenWalk<T>;
+  /** Tokens of the current unit not yet heard. */
+  readonly remaining: number;
+  /** How far through the current unit the voice is, 0..1. */
+  readonly progress: number;
+  readonly length: number;
 };
 
 const defaultTimers: Required<Timers> = {
@@ -95,24 +86,14 @@ const defaultTimers: Required<Timers> = {
  *
  * The SPOKEN clock is the word stream through `feed()`. On the first unit it
  * reaches, every pending estimate timer is cancelled and the estimate does not
- * resume for the rest of the run. Cues are applied on arrival: pipelines that
- * forward TTS alignment already hold each word event until that word's own
- * timestamp on the output clock, so delaying by the client-side audio buffer
- * makes the visual trail the audio by exactly that buffer. `leadMs` exists
- * for pipelines that behave otherwise; measure before setting it.
+ * resume for the rest of the run. Text fed here is taken to be audible NOW:
+ * whatever holds or schedules it to the listener's ear is the adapter's job.
  */
 export function createNarrationClock<T = unknown>(o: ClockOptions<T>): NarrationClock<T> {
   const timers: Required<Timers> = { ...defaultTimers, ...stripUndefined(o.timers ?? {}) };
-  const rawLead = o.leadMs;
-  const fixedLead = typeof rawLead === "number" ? rawLead : 0;
-  const leadMs: () => number = typeof rawLead === "function" ? rawLead : () => fixedLead;
-  const grace = { baseMs: 1500, perWordMs: 420, ...stripUndefined(o.grace ?? {}) };
   const walkOpts: WalkOptions = {
     fireFirst: o.fireFirst,
-    lookahead: o.lookahead,
-    overshoot: o.overshoot,
     openWords: o.openWords,
-    endSlack: o.endSlack,
     normalize: o.normalize,
   };
   /** The first index the clock will ever report. */
@@ -127,23 +108,10 @@ export function createNarrationClock<T = unknown>(o: ClockOptions<T>): Narration
   let cumulative = 0;
   let scheduledThrough = -1;
   const estimateTimers = new Set<unknown>();
-  const leadTimers = new Set<unknown>();
-  let graceTimer: unknown = null;
 
-  const clearSet = (s: Set<unknown>) => {
-    for (const id of s) timers.clearTimeout(id);
-    s.clear();
-  };
-  const clearGrace = () => {
-    if (graceTimer !== null) {
-      timers.clearTimeout(graceTimer);
-      graceTimer = null;
-    }
-  };
-  const clearAll = () => {
-    clearSet(estimateTimers);
-    clearSet(leadTimers);
-    clearGrace();
+  const clearEstimates = () => {
+    for (const id of estimateTimers) timers.clearTimeout(id);
+    estimateTimers.clear();
   };
 
   /** Monotonic: a resync never lowers the index. */
@@ -181,68 +149,41 @@ export function createNarrationClock<T = unknown>(o: ClockOptions<T>): Narration
 
     feed(text) {
       const hits = walk.feed(text);
-      if (hits.length === 0) return hits;
+      if (hits.length === 0) return;
       if (!cued) {
         cued = true;
-        clearSet(estimateTimers);
+        clearEstimates();
       }
-      clearGrace();
-      for (const k of hits) {
-        const lead = leadMs();
-        if (lead > 0) {
-          const id = timers.setTimeout(() => {
-            leadTimers.delete(id);
-            advance(k, "spoken");
-          }, lead);
-          leadTimers.add(id);
-        } else {
-          advance(k, "spoken");
-        }
-      }
-      return hits;
+      for (const k of hits) advance(k, "spoken");
     },
 
     append(unit) {
-      const before = walk.length;
       walk.append(unit);
-      if (walk.length > before) scheduleEstimates();
+      scheduleEstimates();
     },
 
-    hint(i) {
+    sync(i) {
       if (i <= index || i >= walk.length) return;
-      clearGrace();
-      const wait = grace.baseMs + walk.remaining * grace.perWordMs;
-      graceTimer = timers.setTimeout(() => {
-        graceTimer = null;
-        if (i <= index) return;
-        walk.jump(i);
-        advance(i, "hint");
-      }, wait);
+      if (!cued) {
+        cued = true;
+        clearEstimates();
+      }
+      walk.jump(i);
+      advance(i, "sync");
     },
 
     interrupt() {
-      clearAll();
+      clearEstimates();
       running = false;
-      const policy = o.onInterrupt ?? "hold";
-      if (policy === "hold") return;
-      if (policy === "reset") {
-        index = first - 1;
-        source = "interrupt";
-        // When unit 0 is the resting state, say so; when nothing is shown
-        // before the first word, there is nothing to show.
-        if (first === 1 && walk.length > 0) o.onAdvance(0, "interrupt", walk.unit(0)!);
-        return;
-      }
-      policy(index);
     },
 
     stop() {
-      clearAll();
+      clearEstimates();
       running = false;
     },
 
     reset(units = []) {
-      clearAll();
+      clearEstimates();
       walk = new SpokenWalk<T>(units, walkOpts);
       index = first - 1;
       source = "idle";
@@ -261,8 +202,14 @@ export function createNarrationClock<T = unknown>(o: ClockOptions<T>): Narration
     get running() {
       return running;
     },
-    get walk() {
-      return walk;
+    get remaining() {
+      return walk.remaining;
+    },
+    get progress() {
+      return walk.progress;
+    },
+    get length() {
+      return walk.length;
     },
   };
 }

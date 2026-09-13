@@ -8,4 +8,5 @@ export {
   type NarrationClock,
   type Timers,
 } from "./clock.js";
+export { withHints, type HintOptions, type Hinted } from "./hints.js";
 export { clauses, tokenize } from "./text.js";
