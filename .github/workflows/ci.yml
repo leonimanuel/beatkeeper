@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The dev toolchain (vitest 5) needs Node >=22.12, so the test matrix cannot
+  # reach as low as the Node version the published package supports. The smoke
+  # job below covers that gap.
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+  pack:
+    name: pack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Pack
+        run: npm pack --pack-destination . && mv beatkeeper-*.tgz beatkeeper.tgz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball
+          path: beatkeeper.tgz
+          retention-days: 7
+
+  # Installs the real tarball the way a consumer would and imports every
+  # subpath the exports map promises. This is what backs the `engines` claim:
+  # a typo in exports, a missing dist file, or syntax the lowest supported
+  # Node cannot parse all fail here rather than in someone's project.
+  smoke:
+    name: smoke (node ${{ matrix.node }})
+    needs: pack
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tarball
+
+      - name: Install the tarball into a bare project
+        run: |
+          mkdir -p /tmp/smoke
+          cd /tmp/smoke
+          npm init -y >/dev/null
+          npm pkg set type=module >/dev/null
+          npm install --no-audit --no-fund "$GITHUB_WORKSPACE/beatkeeper.tgz" react@18
+
+      - name: Import every exports subpath
+        working-directory: /tmp/smoke
+        run: |
+          node --input-type=module -e '
+            const subpaths = [
+              "beatkeeper",
+              "beatkeeper/react",
+              "beatkeeper/pipecat",
+              "beatkeeper/livekit",
+              "beatkeeper/elevenlabs",
+              "beatkeeper/ag-ui",
+            ];
+            for (const s of subpaths) {
+              const mod = await import(s);
+              if (Object.keys(mod).length === 0) throw new Error(`${s} exported nothing`);
+              console.log(`ok  ${s}  (${Object.keys(mod).join(", ")})`);
+            }
+          '
+
+      # Deliberately shallow: that the built artifact runs at all on this Node,
+      # not that the matcher is correct. Matching semantics belong to the unit
+      # tests, which run on the toolchain's own Node.
+      - name: Drive a clock end to end
+        working-directory: /tmp/smoke
+        run: |
+          node --input-type=module -e '
+            import { createNarrationClock } from "beatkeeper";
+            const seen = [];
+            const clock = createNarrationClock({
+              units: [{ prose: "Fighting increased near Pokrovsk." },
+                      { prose: "Further south, activity shifted toward Zaporizhzhia." }],
+              onAdvance: (i) => seen.push(i),
+            });
+            clock.start();
+            for (const w of "Fighting increased near Pokrovsk. Further south, activity shifted toward Zaporizhzhia.".split(" ")) {
+              clock.feed(w);
+            }
+            clock.stop();
+            // index starts at 0; onAdvance fires on transitions only.
+            if (seen.length === 0) throw new Error("clock never advanced");
+            for (let k = 1; k < seen.length; k++) {
+              if (seen[k] <= seen[k - 1]) throw new Error(`onAdvance not increasing: ${JSON.stringify(seen)}`);
+            }
+            if (clock.index !== 1) throw new Error(`expected to end on the last beat (1), got ${clock.index}`);
+            console.log(`ok  advanced through ${JSON.stringify(seen)}, ended on ${clock.index}`);
+          '
