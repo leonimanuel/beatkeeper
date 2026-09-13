@@ -1,5 +1,10 @@
 # beatkeeper
 
+[![npm](https://img.shields.io/npm/v/beatkeeper.svg)](https://www.npmjs.com/package/beatkeeper)
+[![CI](https://github.com/leonimanuel/beatkeeper/actions/workflows/ci.yml/badge.svg)](https://github.com/leonimanuel/beatkeeper/actions/workflows/ci.yml)
+[![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
+[![license](https://img.shields.io/npm/l/beatkeeper.svg)](LICENSE)
+
 Keeps a voice agent's interface on the words the listener is *hearing*, not the words the model *wrote*.
 
 You describe the narration as an ordered list of beats: the words that will be spoken, plus whatever your UI needs at that moment. Your voice stack tells beatkeeper what is audible as it becomes audible. beatkeeper tells you which beat the listener is on. It renders nothing and touches no audio.
@@ -7,6 +12,28 @@ You describe the narration as an ordered list of beats: the words that will be s
 ```
 npm install beatkeeper
 ```
+
+```ts
+import { createNarrationClock } from "beatkeeper";
+
+const beats = [
+  { prose: "Fighting increased near Pokrovsk.",                    map: pokrovsk },
+  { prose: "Further south, activity shifted toward Zaporizhzhia.", map: zaporizhzhia },
+];
+
+const clock = createNarrationClock({
+  units: beats,
+  onAdvance: (index, source, beat) => focusMap(beat.map),
+});
+
+client.on("botStartedSpeaking", () => clock.start());
+client.on("botTtsText",         (e) => clock.feed(e.text));  // words, as they are heard
+client.on("botStoppedSpeaking", () => clock.stop());
+```
+
+That is the whole integration. The map moves when the voice reaches the sentence that names the place — not when the model finished writing it, seconds earlier.
+
+The rest of this README is about *why* that is harder than it looks, and what beatkeeper does about it. If you would rather start from working code, skip to [Quick start](#quick-start); if your stack is Pipecat, LiveKit, ElevenLabs or AG-UI, [Adapters](#adapters) does the binding above for you in one line.
 
 > **[VIDEO A — Attaché, 15s]** The landing demo at attache.news. The bot reads the founder's briefing; as each sentence is spoken the story graph lights the story being told and draws the bridge to the one it connects to. Subtitle visible, so word-to-picture timing is legible.
 
@@ -356,6 +383,14 @@ const el = fromElevenLabs({ audioTime: () => (ctx.currentTime - firstSampleAt) *
 - Rendering or animation. The output is an index.
 - Repairing a broken provider stream, or de-duplicating your own messages.
 - Guessing the audible position when no evidence exists. It holds.
+
+## Contributing
+
+Adapters, real payload fixtures, and bug reports with the word stream attached are the most useful things to send. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and what makes a report actionable — beatkeeper resolves an index from a stream of words, so a report without the stream is hard to act on, and the five problems above have five different fixes.
+
+Note the Node split: working on beatkeeper needs Node 22.12+ because `vitest@5` requires it, while the published package supports Node 18+. CI enforces both halves.
+
+Release notes live in [CHANGELOG.md](CHANGELOG.md). Security policy and threat model: [SECURITY.md](SECURITY.md).
 
 ## License
 
