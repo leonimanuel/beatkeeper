@@ -25,8 +25,12 @@ const dialogue = fixture("elevenlabs-dialogue");
 
 const align = (m: ElevenLabsMessage) => m.alignment ?? m.normalizedAlignment ?? m.normalized_alignment;
 
-/** Feed a whole fixture and record the ms at which each advance lands. */
-function run(f: Fixture, units: { prose: string }[]) {
+/**
+ * Feed a whole fixture and record the ms at which each advance lands.
+ * `playhead`, when given, maps wall ms to stream ms and drives the adapter's
+ * audio clock instead of its wall-clock timers.
+ */
+function run(f: Fixture, units: { prose: string }[], playhead?: (wallMs: number) => number) {
   const timers = fakeTimers();
   const at: { index: number; ms: number }[] = [];
   const clock = createNarrationClock({
@@ -34,7 +38,7 @@ function run(f: Fixture, units: { prose: string }[]) {
     timers,
     onAdvance: (index) => at.push({ index, ms: timers.now() }),
   });
-  const el = fromElevenLabs({ timers });
+  const el = fromElevenLabs(playhead ? { timers, audioTime: () => playhead(timers.now()) } : { timers });
   el.bind(clock);
   // Synthesis outruns playback: every message is in hand before the audio it
   // describes has played, which is exactly what makes the offsets matter.
@@ -181,5 +185,87 @@ describe("elevenlabs adapter, live text-to-dialogue capture", () => {
     el.message({ context_id: "b", is_final: true });
     timers.advance(500);
     expect(fed).toEqual(["one", "two"]);
+  });
+});
+
+describe("elevenlabs adapter, audio clock", () => {
+  const units = [
+    { prose: "Good morning, Leon." },
+    { prose: "Here is today's briefing, and it runs" },
+    { prose: "a little longer than usual." },
+  ];
+  /** A playhead that keeps pace with the wall from playbackStarted() at 0. */
+  const keepsPace = (wallMs: number) => wallMs;
+
+  it("lands each beat on the wall-clock path's golden ms when the playhead keeps pace", () => {
+    // Same fixtures, same numbers as the wall-clock tests above: the poll
+    // sleeps the shorter of its interval and the time to the next word, so
+    // it wakes on the word's own ms rather than up to an interval late.
+    expect(run(streamInput, units, keepsPace)).toEqual([
+      { index: 1, ms: 871 },
+      { index: 2, ms: 2566 },
+    ]);
+    expect(run(dialogue, units, keepsPace)).toEqual([
+      { index: 1, ms: 1040 },
+      { index: 2, ms: 2600 },
+    ]);
+  });
+
+  it("holds the next beat through a stall and fires it when the playhead resumes", () => {
+    // Playback freezes at stream ms 1000 for three seconds of wall time,
+    // then resumes from where it stopped.
+    const stalled = (wallMs: number) => (wallMs < 1000 ? wallMs : wallMs < 4000 ? 1000 : wallMs - 3000);
+    const timers = fakeTimers();
+    const at: { index: number; ms: number }[] = [];
+    const clock = createNarrationClock({ units, timers, onAdvance: (index) => at.push({ index, ms: timers.now() }) });
+    const el = fromElevenLabs({ timers, audioTime: () => stalled(timers.now()) });
+    el.bind(clock);
+    for (const m of streamInput.messages) el.message(m);
+    el.playbackStarted();
+
+    // The wall-clock path fires the second beat at 2566. Through the whole
+    // stall only the first, already audible, has fired.
+    timers.advance(3999);
+    expect(at).toEqual([{ index: 1, ms: 871 }]);
+
+    // Stream ms 2566 is reached at wall 5566.
+    timers.advance(2000);
+    expect(at).toEqual([
+      { index: 1, ms: 871 },
+      { index: 2, ms: 5566 },
+    ]);
+  });
+
+  it("stops polling and drops pending words on interrupted()", () => {
+    const timers = fakeTimers();
+    const fed: string[] = [];
+    const clock = createNarrationClock({ units, timers, onAdvance: () => {} });
+    const el = fromElevenLabs({ timers, audioTime: () => timers.now() });
+    el.bind({ ...clock, feed: (t: string) => fed.push(t) } as typeof clock);
+    for (const m of streamInput.messages) el.message(m);
+    el.playbackStarted();
+    timers.advance(1000);
+    expect(fed).toEqual(["Good", "morning,", "Leon.", "Here"]);
+    expect(timers.pending()).toBe(1);
+
+    el.interrupted();
+    // No estimate is configured, so the only timer that could be armed is the poll.
+    expect(timers.pending()).toBe(0);
+    timers.advance(10_000);
+    expect(fed).toEqual(["Good", "morning,", "Leon.", "Here"]);
+  });
+
+  it("arms no poll while nothing is pending", () => {
+    const timers = fakeTimers();
+    const clock = createNarrationClock({ units, timers, onAdvance: () => {} });
+    const el = fromElevenLabs({ timers, audioTime: () => timers.now() });
+    el.bind(clock);
+    el.playbackStarted();
+    expect(timers.pending()).toBe(0);
+
+    el.message({ alignment: { chars: "Good ".split(""), char_start_times_ms: [500, 520, 540, 560, 580], char_durations_ms: [20, 20, 20, 20, 20] } });
+    expect(timers.pending()).toBe(1);
+    timers.advance(600);
+    expect(timers.pending()).toBe(0);
   });
 });

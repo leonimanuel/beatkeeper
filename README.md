@@ -331,13 +331,16 @@ type Adapter<T> = { bind(clock: NarrationClock<T>): () => void };
 
 **LiveKit**: `fromLiveKit(room, { agentIdentity? })`. Binds `participantAttributesChanged` (agent state `speaking` starts; leaving it stops), `transcriptionReceived` (the appended suffix of each growing segment), `activeSpeakersChanged` (the local participant speaking interrupts). Requires `use_tts_aligned_transcript=True` on the `AgentSession`. LiveKit has since moved transcripts to text streams on the `lk.transcription` topic; this adapter targets the event API and has not been run against a live room.
 
-**ElevenLabs**: `fromElevenLabs()`, for the `/stream-input` text-to-speech socket and the v3 `/text-to-dialogue/multi-stream-input` socket. Alignment arrives with the audio, ahead of playback, so the adapter assembles words from `alignment.chars` and schedules each at its offset from `playbackStarted()`. That offset is not the wire value: `char_start_times_ms` restarts at zero in every message, so the adapter accumulates each message's span (last character's start plus its duration) as it goes, whether or not the message completed a word. The dialogue socket multiplexes contexts, so assembly is kept per `context_id`; its alignment is opt-in (`sync_alignment=true`). Tested against captures from both live sockets ([fixtures](test/fixtures)). The HTTP `with-timestamps` endpoint is a different shape and is not covered.
+**ElevenLabs**: `fromElevenLabs()`, for the `/stream-input` text-to-speech socket and the v3 `/text-to-dialogue/multi-stream-input` socket. Alignment arrives with the audio, ahead of playback, so the adapter assembles words from `alignment.chars` and schedules each at its offset from `playbackStarted()`. That offset is not the wire value: `char_start_times_ms` restarts at zero in every message, so the adapter accumulates each message's span (last character's start plus its duration) as it goes, whether or not the message completed a word. The dialogue socket multiplexes contexts, so assembly is kept per `context_id`; its alignment is opt-in (`sync_alignment=true`). Tested against captures from both live sockets ([fixtures](test/fixtures)). The HTTP `with-timestamps` endpoint is a different shape and is not covered. By default words are scheduled with wall-clock timers from `playbackStarted()`, which drift from the audio whenever playback falls behind the wall: a buffering stall, a suspended `AudioContext`, a backgrounded tab whose timers are throttled. Pass `audioTime` to schedule against the audio clock instead: it returns the playhead's position in stream ms (for Web Audio, `(ctx.currentTime - firstSampleAt) * 1000`) and each word is fed as the playhead reaches it, so a stall holds the words with the audio. Use it whenever you own the playback pipeline; the default is for an `<audio>` element you cannot read a playhead from.
 
 ```ts
 const el = fromElevenLabs();
 el.bind(clock);
 ws.onmessage = (e) => el.message(JSON.parse(e.data));
 audio.onplay = () => el.playbackStarted();
+
+// Web Audio: follow the playhead rather than the wall.
+const el = fromElevenLabs({ audioTime: () => (ctx.currentTime - firstSampleAt) * 1000 });
 ```
 
 **AG-UI**: `fromAgUi(agent, names?)`. AG-UI carries no audio timing, so units and spoken text travel as `Custom` events (`beat`, `beat.spoken`, `beat.started`, `beat.interrupted`) that the agent side must emit from its own TTS word stream. Not yet run against a live agent.
