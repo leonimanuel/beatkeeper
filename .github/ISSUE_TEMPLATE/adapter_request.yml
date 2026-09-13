@@ -1,0 +1,57 @@
+name: Adapter request
+description: A voice stack beatkeeper does not speak yet
+labels: [adapter]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Adapters are the most useful thing to add to beatkeeper, and the payload
+        shapes are the hard part — not the code. Real payloads make this
+        actionable; synthetic ones tend to be too well-behaved.
+
+  - type: input
+    id: stack
+    attributes:
+      label: Which stack
+      placeholder: Cartesia, Deepgram, Rime, a custom WebSocket…
+    validations:
+      required: true
+
+  - type: textarea
+    id: payloads
+    attributes:
+      label: Real payloads
+      description: >
+        A handful of consecutive messages carrying spoken text, verbatim.
+        Redact content if you must, but keep the structure intact.
+      render: json
+    validations:
+      required: true
+
+  - type: dropdown
+    id: granularity
+    attributes:
+      label: What each message carries
+      options:
+        - One word
+        - A sentence that fills in progressively
+        - A chunk of arbitrary size
+        - Word-level timestamps against an audio clock
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: lifecycle
+    attributes:
+      label: Start, stop and interruption
+      description: >
+        Which events tell you the bot started speaking, stopped, and was
+        interrupted? These drive `start()`, `stop()` and `interrupt()`.
+
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to open a PR for this adapter

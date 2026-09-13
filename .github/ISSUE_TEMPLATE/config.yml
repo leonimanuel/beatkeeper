@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question about integrating beatkeeper
+    url: https://github.com/leonimanuel/beatkeeper/discussions
+    about: >
+      For "how do I wire this to my stack" questions. The README's per-problem
+      sections cover the five common desync causes and are worth a scan first.
