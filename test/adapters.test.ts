@@ -3,7 +3,7 @@ import { createNarrationClock } from "../src/clock.js";
 import { fromPipecat } from "../src/adapters/pipecat.js";
 import { fromLiveKit } from "../src/adapters/livekit.js";
 import { fromElevenLabs } from "../src/adapters/elevenlabs.js";
-import { fakeTimers } from "./clock.test.js";
+import { fakeTimers } from "./timers.js";
 
 /** A minimal on/off emitter in the shape both adapters duck-type. */
 function emitter() {

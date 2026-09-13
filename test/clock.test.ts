@@ -1,37 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { compose, createNarrationClock, type ClockOptions, type Timers } from "../src/clock.js";
+import { compose, createNarrationClock, type ClockOptions } from "../src/clock.js";
+import { fakeTimers } from "./timers.js";
 import { withHints } from "../src/hints.js";
-
-/** A deterministic timer queue, so every test is synchronous. */
-export function fakeTimers() {
-  let t = 0;
-  let seq = 0;
-  const q = new Map<number, { at: number; fn: () => void }>();
-  const timers: Required<Timers> & { advance(ms: number): void; pending(): number } = {
-    now: () => t,
-    setTimeout: (fn, ms) => {
-      const id = ++seq;
-      q.set(id, { at: t + ms, fn });
-      return id;
-    },
-    clearTimeout: (id) => {
-      q.delete(id as number);
-    },
-    advance(ms) {
-      const end = t + ms;
-      for (;;) {
-        const due = [...q.entries()].filter(([, e]) => e.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
-        if (!due) break;
-        t = due[1].at;
-        q.delete(due[0]);
-        due[1].fn();
-      }
-      t = end;
-    },
-    pending: () => q.size,
-  };
-  return timers;
-}
 
 const U = [
   { prose: "Good morning" },
@@ -114,6 +84,35 @@ describe("estimate clock", () => {
     clock.start();
     timers.advance(0);
     expect(log).toEqual(["0:estimate"]);
+  });
+
+  it("resumes after stop() where it paused, not from the first unit", () => {
+    const { clock, timers, log } = make({ estimate: perUnit });
+    clock.start();
+    timers.advance(400);
+    clock.stop(); // the bot fell silent 400ms into unit 0
+    timers.advance(5000);
+    expect(log).toEqual([]);
+    clock.start(); // it speaks again: 600ms of unit 0 remain
+    timers.advance(599);
+    expect(log).toEqual([]);
+    timers.advance(1);
+    expect(log).toEqual(["1:estimate"]);
+    timers.advance(1000);
+    expect(log).toEqual(["1:estimate", "2:estimate"]);
+  });
+
+  it("a stop between utterances does not re-run the units already passed", () => {
+    // Before: start() after stop() rescheduled every unit from zero, so the
+    // second utterance waited the whole narration again before moving.
+    const { clock, timers, log } = make({ estimate: perUnit });
+    clock.start();
+    timers.advance(1000);
+    expect(log).toEqual(["1:estimate"]);
+    clock.stop();
+    clock.start();
+    timers.advance(1000);
+    expect(log).toEqual(["1:estimate", "2:estimate"]);
   });
 
   it("schedules a unit appended while running", () => {
