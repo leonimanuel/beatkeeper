@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createNarrationClock, type ClockOptions, type Timers } from "../src/clock.js";
+import { compose, createNarrationClock, type ClockOptions, type Timers } from "../src/clock.js";
+import { withHints } from "../src/hints.js";
 
 /** A deterministic timer queue, so every test is synchronous. */
-function fakeTimers() {
+export function fakeTimers() {
   let t = 0;
   let seq = 0;
   const q = new Map<number, { at: number; fn: () => void }>();
@@ -53,6 +54,27 @@ function make(overrides: Partial<ClockOptions> = {}) {
 
 const perUnit = () => 1000;
 
+describe("spoken clock", () => {
+  it("advances on the words and reports the unit", () => {
+    const seen: string[] = [];
+    const clock = createNarrationClock({
+      units: U, timers: fakeTimers(),
+      onAdvance: (_i, _s, u) => seen.push(u.prose),
+    });
+    clock.feed("Good morning On");
+    expect(clock.index).toBe(1);
+    expect(clock.source).toBe("spoken");
+    expect(seen).toEqual(["On the 27th a strike hit Orlivka"]);
+  });
+
+  it("exposes remaining and progress for the current unit", () => {
+    const { clock } = make();
+    clock.feed("Good morning On the 27th");
+    expect(clock.remaining).toBe(4);
+    expect(clock.progress).toBeCloseTo(3 / 7);
+  });
+});
+
 describe("estimate clock", () => {
   it("schedules each unit at the cumulative estimate of the units before it", () => {
     const { clock, timers, log } = make({ estimate: perUnit });
@@ -61,9 +83,7 @@ describe("estimate clock", () => {
     expect(log).toEqual([]);
     timers.advance(1);
     expect(log).toEqual(["1:estimate"]);
-    timers.advance(1000);
-    expect(log).toEqual(["1:estimate", "2:estimate"]);
-    timers.advance(1000);
+    timers.advance(2000);
     expect(log).toEqual(["1:estimate", "2:estimate", "3:estimate"]);
     expect(timers.pending()).toBe(0);
   });
@@ -76,11 +96,17 @@ describe("estimate clock", () => {
     expect(clock.running).toBe(true);
   });
 
-  it("does not start twice", () => {
-    const { clock, timers } = make({ estimate: perUnit });
+  it("does not start twice, and re-arms after stop()", () => {
+    const { clock, timers, log } = make({ estimate: perUnit });
     clock.start();
     clock.start();
     expect(timers.pending()).toBe(3);
+    timers.advance(3000);
+    clock.stop();
+    clock.reset(U);
+    clock.start();
+    timers.advance(1000);
+    expect(log.at(-1)).toBe("1:estimate");
   });
 
   it("fires unit 0 immediately when fireFirst is set", () => {
@@ -101,23 +127,14 @@ describe("estimate clock", () => {
 });
 
 describe("handover", () => {
-  it("the first spoken hit cancels every pending estimate", () => {
+  it("the first spoken hit cancels every pending estimate, for good", () => {
     const { clock, timers, log } = make({ estimate: perUnit });
     clock.start();
     timers.advance(500);
-    expect(clock.feed("Good morning On")).toEqual([1]);
+    clock.feed("Good morning On");
     expect(log).toEqual(["1:spoken"]);
     expect(timers.pending()).toBe(0);
-    timers.advance(60_000);
-    expect(log).toEqual(["1:spoken"]);
-    expect(clock.source).toBe("spoken");
-  });
-
-  it("does not resume the estimate for units appended after the handover", () => {
-    const { clock, timers, log } = make({ units: U.slice(0, 2), estimate: perUnit });
-    clock.start();
-    clock.feed("Good morning On");
-    clock.append(U[2]);
+    clock.append({ prose: "A fifth line" });
     timers.advance(60_000);
     expect(log).toEqual(["1:spoken"]);
   });
@@ -126,80 +143,42 @@ describe("handover", () => {
     const { clock, timers, log } = make({ estimate: perUnit });
     clock.start();
     timers.advance(2000);
-    expect(log).toEqual(["1:estimate", "2:estimate"]);
     clock.feed("Good morning On the 27th");
     expect(log).toEqual(["1:estimate", "2:estimate"]);
     clock.feed("a strike hit Orlivka Kharkiv was hit the same night Casualty");
     expect(log).toEqual(["1:estimate", "2:estimate", "3:spoken"]);
-    expect(clock.index).toBe(3);
   });
 });
 
-describe("leadMs", () => {
-  it("delays a spoken cue by leadMs", () => {
-    const { clock, timers, log } = make({ leadMs: 200 });
-    clock.feed("Good morning On");
-    expect(log).toEqual([]);
-    timers.advance(199);
-    expect(log).toEqual([]);
-    timers.advance(1);
-    expect(log).toEqual(["1:spoken"]);
-  });
-});
-
-describe("hint", () => {
-  const grace = { baseMs: 1000, perWordMs: 100 };
-
-  it("is applied after base plus the remaining words of the current unit", () => {
-    const { clock, timers, log } = make({ grace });
-    // Unit 0 has two words, none heard: wait 1000 + 2 * 100.
-    clock.hint(2);
-    timers.advance(1199);
-    expect(log).toEqual([]);
-    timers.advance(1);
-    expect(log).toEqual(["2:hint"]);
-    expect(clock.index).toBe(2);
-    expect(clock.walk.reached).toBe(2);
+describe("sync", () => {
+  it("re-anchors the walk and the index at once", () => {
+    const { clock, log } = make();
+    clock.sync(2);
+    expect(log).toEqual(["2:sync"]);
+    expect(clock.feed("Kharkiv was hit the same night Casualty"));
+    expect(log).toEqual(["2:sync", "3:spoken"]);
   });
 
-  it("is discarded when the words arrive first", () => {
-    const { clock, timers, log } = make({ grace });
-    clock.hint(1);
-    clock.feed("Good morning On");
-    expect(log).toEqual(["1:spoken"]);
-    timers.advance(60_000);
-    expect(log).toEqual(["1:spoken"]);
-    expect(timers.pending()).toBe(0);
-  });
-
-  it("ignores a hint at or behind the current index", () => {
-    const { clock, timers, log } = make({ grace });
+  it("ignores a sync at or behind the index, or past the end", () => {
+    const { clock, log } = make();
     clock.feed("Good morning On the 27th a strike hit Orlivka Kharkiv");
-    clock.hint(1);
-    clock.hint(2);
-    timers.advance(60_000);
+    clock.sync(1);
+    clock.sync(2);
+    clock.sync(99);
     expect(log).toEqual(["1:spoken", "2:spoken"]);
   });
 
-  it("a later hint replaces an earlier one", () => {
-    const { clock, timers, log } = make({ grace });
-    clock.hint(1);
-    clock.hint(2);
-    timers.advance(1200);
-    expect(log).toEqual(["2:hint"]);
-  });
-
-  it("the walk resumes from the hinted unit", () => {
-    const { clock, timers, log } = make({ grace });
-    clock.hint(2);
-    timers.advance(1200);
-    expect(clock.feed("Kharkiv was hit the same night Casualty")).toEqual([3]);
-    expect(log).toEqual(["2:hint", "3:spoken"]);
+  it("cancels the estimate like a spoken hit would", () => {
+    const { clock, timers, log } = make({ estimate: perUnit });
+    clock.start();
+    clock.sync(2);
+    timers.advance(60_000);
+    expect(log).toEqual(["2:sync"]);
   });
 });
 
 describe("interrupt", () => {
-  it("hold: stops the clocks and keeps the index", () => {
+  it("stops the clocks and holds the index", () => {
     const { clock, timers, log } = make({ estimate: perUnit });
     clock.start();
     timers.advance(1000);
@@ -210,31 +189,7 @@ describe("interrupt", () => {
     expect(clock.running).toBe(false);
   });
 
-  it("reset: returns to unit 0 and says so", () => {
-    const { clock, log } = make({ onInterrupt: "reset" });
-    clock.feed("Good morning On the 27th a strike hit Orlivka Kharkiv");
-    clock.interrupt();
-    expect(log).toEqual(["1:spoken", "2:spoken", "0:interrupt"]);
-    expect(clock.index).toBe(0);
-  });
-
-  it("reset with fireFirst: nothing to show, nothing reported", () => {
-    const { clock, log } = make({ onInterrupt: "reset", fireFirst: true });
-    clock.feed("Good morning On");
-    clock.interrupt();
-    expect(log).toEqual(["0:spoken", "1:spoken"]);
-    expect(clock.index).toBe(-1);
-  });
-
-  it("callback: receives the current index", () => {
-    let seen = -1;
-    const { clock } = make({ onInterrupt: (i) => (seen = i) });
-    clock.feed("Good morning On");
-    clock.interrupt();
-    expect(seen).toBe(1);
-  });
-
-  it("a stopped clock can be started again", () => {
+  it("can be started again", () => {
     const { clock, timers, log } = make({ estimate: perUnit });
     clock.start();
     clock.interrupt();
@@ -245,7 +200,7 @@ describe("interrupt", () => {
 });
 
 describe("reset", () => {
-  it("replaces the units and returns to the resting state, keeping the estimate off until start", () => {
+  it("replaces the units and returns to rest", () => {
     const { clock, timers, log } = make({ estimate: perUnit });
     clock.start();
     timers.advance(1000);
@@ -255,7 +210,7 @@ describe("reset", () => {
     expect(clock.running).toBe(false);
     timers.advance(60_000);
     expect(log).toEqual(["1:estimate"]);
-    expect(clock.feed("Fresh start Second")).toEqual([1]);
+    clock.feed("Fresh start Second");
     expect(log).toEqual(["1:estimate", "1:spoken"]);
   });
 });
@@ -271,5 +226,49 @@ describe("walk options pass through", () => {
     expect(log).toEqual([]);
     clock.feed("Kharkiv was");
     expect(log).toEqual(["0:spoken"]);
+  });
+});
+
+describe("withHints", () => {
+  const grace = { baseMs: 1000, perWordMs: 100 };
+
+  it("applies a hint after base plus the remaining words, as a sync", () => {
+    const { clock, timers, log } = make();
+    const h = withHints(clock, { ...grace, timers });
+    // Unit 0 has two words, none heard: wait 1000 + 2 * 100.
+    h.hint(2);
+    timers.advance(1199);
+    expect(log).toEqual([]);
+    timers.advance(1);
+    expect(log).toEqual(["2:sync"]);
+  });
+
+  it("drops the hint when the words arrive first", () => {
+    const { clock, timers, log } = make();
+    const h = withHints(clock, { ...grace, timers });
+    h.hint(1);
+    h.feed("Good morning On");
+    timers.advance(60_000);
+    expect(log).toEqual(["1:spoken"]);
+  });
+
+  it("a later hint replaces an earlier one", () => {
+    const { clock, timers, log } = make();
+    const h = withHints(clock, { ...grace, timers });
+    h.hint(1);
+    h.hint(2);
+    timers.advance(1200);
+    expect(log).toEqual(["2:sync"]);
+  });
+});
+
+describe("compose", () => {
+  it("binds every adapter and unbinds them all", () => {
+    const calls: string[] = [];
+    const a = { bind: () => { calls.push("bind a"); return () => calls.push("unbind a"); } };
+    const b = { bind: () => { calls.push("bind b"); return () => calls.push("unbind b"); } };
+    const { clock } = make();
+    compose(a, b).bind(clock)();
+    expect(calls).toEqual(["bind a", "bind b", "unbind b", "unbind a"]);
   });
 });

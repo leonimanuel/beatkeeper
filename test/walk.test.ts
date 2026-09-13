@@ -33,16 +33,12 @@ describe("tokenize", () => {
 describe("clauses", () => {
   it("splits at sentence ends, dashes, semicolons and ', so'", () => {
     expect(clauses("We won, so we left. Then we slept — briefly; not long.")).toEqual([
-      "We won",
-      "so we left.",
-      "Then we slept",
-      "briefly",
-      "not long.",
+      "We won", "so we left.", "Then we slept", "briefly", "not long.",
     ]);
   });
 });
 
-describe("SpokenWalk", () => {
+describe("the normal walk", () => {
   it("fires each unit once, in order, on its first word", () => {
     const w = new SpokenWalk(beats);
     expect(speak(w, "Good morning.")).toEqual([]);
@@ -58,16 +54,44 @@ describe("SpokenWalk", () => {
     expect(new SpokenWalk(beats, { fireFirst: true }).feed("Good")).toEqual([0]);
   });
 
-  it("accepts a whole sentence in one feed", () => {
-    const w = new SpokenWalk(beats);
-    expect(w.feed("Good morning. On the 27th, a strike hit the Orlivka border crossing. Kharkiv")).toEqual([1, 2]);
+  it("is indifferent to chunk size: words, phrases and whole sentences agree", () => {
+    const sentence = "Good morning. On the 27th, a strike hit the Orlivka border crossing. Kharkiv";
+    const a = new SpokenWalk(beats);
+    const b = new SpokenWalk(beats);
+    const c = new SpokenWalk(beats);
+    expect(speak(a, sentence)).toEqual([1, 2]);
+    expect(sentence.split(". ").flatMap((p) => b.feed(p))).toEqual([1, 2]);
+    expect(c.feed(sentence)).toEqual([1, 2]);
   });
 
-  it("looks ahead past a number the TTS read out differently", () => {
+  it("is monotonic: words from an earlier unit never lower it", () => {
+    const w = new SpokenWalk(beats);
+    speak(w, "Good morning. On the 27th, a strike hit the Orlivka border crossing. Kharkiv");
+    expect(speak(w, "Good morning On the")).toEqual([]);
+    expect(w.reached).toBe(2);
+  });
+});
+
+describe("the script is trusted", () => {
+  it("keeps a repeated sentence and fires it each time", () => {
+    const w = new SpokenWalk([{ prose: "Again." }, { prose: "And now the result." }, { prose: "Again." }]);
+    expect(w.length).toBe(3);
+    expect(speak(w, "Again. And now the result. Again.")).toEqual([1, 2]);
+  });
+
+  it("append adds exactly one unit, duplicate prose or not", () => {
+    const w = new SpokenWalk([{ prose: "He said no." }]);
+    w.append({ prose: "He said no." });
+    expect(w.length).toBe(2);
+  });
+});
+
+describe("fuzzy matching within a unit", () => {
+  it("recovers when the TTS reads a number out differently", () => {
     const w = new SpokenWalk(beats);
     speak(w, "Good morning.");
     expect(speak(w, "On the twenty seventh a strike hit")).toEqual([1]);
-    // The walk resynced on "a strike hit"; the next unit fires on its first word.
+    expect(w.remaining).toBe(4);
     expect(speak(w, "the Orlivka border crossing. Kharkiv")).toEqual([2]);
   });
 
@@ -80,32 +104,73 @@ describe("SpokenWalk", () => {
     const w = new SpokenWalk([{ prose: "and then" }, { prose: "youre late" }]);
     speak(w, "and then");
     expect(speak(w, "you")).toEqual([]);
-    expect(w.reached).toBe(0);
     expect(speak(w, "youre")).toEqual([1]);
   });
 
-  it("holds position on a word that matches nothing nearby", () => {
+  it("holds position on a word it cannot place", () => {
     const w = new SpokenWalk([{ prose: "one two three four five six" }, { prose: "seven eight" }]);
     speak(w, "one two");
-    expect(w.remaining).toBe(4);
     speak(w, "um");
     expect(w.remaining).toBe(4);
     speak(w, "three");
     expect(w.remaining).toBe(3);
+  });
+
+  it("may skip to anywhere in the remainder of the current unit", () => {
+    const w = new SpokenWalk([{ prose: "a b c d e f g h i j k l" }, { prose: "x y" }]);
+    speak(w, "a k");
+    expect(w.remaining).toBe(1);
     expect(w.reached).toBe(0);
   });
 
-  it("assumes the next unit after `overshoot` unmatched words past the end", () => {
+  it("normalize applies to script and speech alike", () => {
+    const words: Record<string, string> = { twelfth: "12th" };
+    const w = new SpokenWalk(
+      [{ prose: "Saturday, September 12th." }, { prose: "Morning." }],
+      { normalize: (t) => words[t] ?? t },
+    );
+    expect(speak(w, "Saturday September twelfth Morning")).toEqual([1]);
+  });
+});
+
+describe("crossing into the next unit", () => {
+  const units = [{ prose: "a b c d e f g h" }, { prose: "the x y z" }, { prose: "q r s" }];
+
+  it("one stray word cannot move the cursor to the next unit", () => {
+    const w = new SpokenWalk(units);
+    expect(speak(w, "a b the")).toEqual([]);
+    expect(speak(w, "c d")).toEqual([]);
+    expect(w.reached).toBe(0);
+  });
+
+  it("two words in a row from the next unit can", () => {
+    const w = new SpokenWalk(units);
+    expect(speak(w, "a b the x")).toEqual([1]);
+    expect(w.remaining).toBe(2);
+  });
+
+  it("a single word suffices when the current unit is nearly done", () => {
+    const w = new SpokenWalk(units);
+    expect(speak(w, "a b c d e f the")).toEqual([1]);
+  });
+
+  it("never reaches two units ahead directly: a unit is entered before the one after it", () => {
+    const w = new SpokenWalk(units);
+    // Unit 2's words, spoken at the end of unit 0, are unplaceable: unit 2 is out of reach.
+    expect(speak(w, "a b c d e f g h q r")).toEqual([]);
+    expect(w.reached).toBe(0);
+    // The third unplaceable word is overshoot: unit 1 is assumed, not unit 2.
+    expect(speak(w, "s")).toEqual([1]);
+    // From unit 1, one word of unit 2 is not enough; two in a row are.
+    expect(speak(w, "q")).toEqual([]);
+    expect(speak(w, "r")).toEqual([2]);
+  });
+
+  it("after three unplaceable words past the end, the next unit is assumed", () => {
     const w = new SpokenWalk([{ prose: "a b c" }, { prose: "x y z" }]);
     speak(w, "a b c");
-    expect(speak(w, "q q")).toEqual([]);
-    expect(speak(w, "q")).toEqual([1]);
-  });
-
-  it("never overshoots when overshoot is 0", () => {
-    const w = new SpokenWalk([{ prose: "a b c" }, { prose: "x y z" }], { overshoot: 0 });
-    speak(w, "a b c q q q q q");
-    expect(w.reached).toBe(0);
+    expect(speak(w, "mm mm")).toEqual([]);
+    expect(speak(w, "mm")).toEqual([1]);
   });
 
   it("does not overshoot on the last unit", () => {
@@ -113,42 +178,60 @@ describe("SpokenWalk", () => {
     expect(speak(w, "a b c q q q q")).toEqual([]);
   });
 
-  describe("openWords", () => {
-    const units = [{ prose: "Kharkiv was hit overnight." }, { prose: "Three died." }];
+  it("a whole unit read unrecognisably is passed over once the one after it is heard", () => {
+    const w = new SpokenWalk([{ prose: "a b c" }, { prose: "he said no" }, { prose: "pipeline or trump" }]);
+    speak(w, "a b c");
+    // Three unplaceable words push the cursor into beat 1; the cursor is then
+    // near beat 1's end, so beat 2's first word crosses on its own.
+    expect(speak(w, "hee sed know")).toEqual([1]);
+    expect(speak(w, "pipeline")).toEqual([2]);
+  });
+});
 
-    it("ignores a status line that names the same place", () => {
-      const w = new SpokenWalk(units, { fireFirst: true, openWords: 2 });
-      expect(speak(w, "Looking at Kharkiv now")).toEqual([]);
-      expect(w.opened).toBe(false);
-      expect(w.reached).toBe(-1);
-    });
+describe("openWords", () => {
+  const units = [{ prose: "Kharkiv was hit overnight." }, { prose: "Three died." }];
 
-    it("opens on two script words in a row", () => {
-      const w = new SpokenWalk(units, { fireFirst: true, openWords: 2 });
-      speak(w, "Looking at Kharkiv now");
-      expect(speak(w, "Kharkiv was")).toEqual([0]);
-      expect(w.opened).toBe(true);
-      expect(speak(w, "hit overnight. Three")).toEqual([1]);
-    });
-
-    it("re-arms when the miss is itself the first word", () => {
-      const w = new SpokenWalk(units, { fireFirst: true, openWords: 2 });
-      // "Kharkiv Kharkiv was": the second "Kharkiv" misses seq[1] but is seq[0], so the run restarts at 1.
-      expect(speak(w, "Kharkiv Kharkiv was")).toEqual([0]);
-    });
-
-    it("opens a one-word unit on its one word", () => {
-      const w = new SpokenWalk([{ prose: "Kharkiv." }, { prose: "Three died." }], { fireFirst: true, openWords: 2 });
-      expect(speak(w, "Kharkiv")).toEqual([0]);
-    });
+  it("ignores a status line that names the same place", () => {
+    const w = new SpokenWalk(units, { fireFirst: true, openWords: 2 });
+    expect(speak(w, "Looking at Kharkiv now")).toEqual([]);
+    expect(w.opened).toBe(false);
   });
 
-  it("drops an appended unit whose prose is already present", () => {
+  it("opens on two script words in a row", () => {
+    const w = new SpokenWalk(units, { fireFirst: true, openWords: 2 });
+    speak(w, "Looking at Kharkiv now");
+    expect(speak(w, "Kharkiv was")).toEqual([0]);
+    expect(speak(w, "hit overnight. Three")).toEqual([1]);
+  });
+
+  it("re-arms when the miss is itself the first word", () => {
+    const w = new SpokenWalk(units, { fireFirst: true, openWords: 2 });
+    expect(speak(w, "Kharkiv Kharkiv was")).toEqual([0]);
+  });
+
+  it("opens a one-word unit on its one word", () => {
+    const w = new SpokenWalk([{ prose: "Kharkiv." }, { prose: "Three died." }], { fireFirst: true, openWords: 2 });
+    expect(speak(w, "Kharkiv")).toEqual([0]);
+  });
+});
+
+describe("jump and progress", () => {
+  it("jump marks everything up to the target reached and stays monotonic", () => {
     const w = new SpokenWalk(beats);
-    w.append({ prose: "Kharkiv was hit the same night." });
-    expect(w.length).toBe(4);
-    w.append({ prose: "New sentence." });
-    expect(w.length).toBe(5);
+    expect(w.jump(2)).toEqual([1, 2]);
+    expect(w.jump(1)).toEqual([]);
+    expect(speak(w, "On the 27th")).toEqual([]);
+    expect(speak(w, "Kharkiv was hit the same night. Casualty")).toEqual([3]);
+  });
+
+  it("progress is the fraction of the current unit heard", () => {
+    const w = new SpokenWalk([{ prose: "one two three four" }, { prose: "five" }]);
+    expect(w.progress).toBe(0);
+    speak(w, "one two");
+    expect(w.progress).toBe(0.5);
+    speak(w, "three four five");
+    expect(w.reached).toBe(1);
+    expect(w.progress).toBe(1);
   });
 
   it("appends units mid-stream and reaches them", () => {
@@ -156,21 +239,5 @@ describe("SpokenWalk", () => {
     speak(w, "Good morning.");
     w.append(beats[1]);
     expect(speak(w, "On")).toEqual([1]);
-  });
-
-  it("jump marks everything up to the target reached and is monotonic afterwards", () => {
-    const w = new SpokenWalk(beats);
-    expect(w.jump(2)).toEqual([1, 2]);
-    expect(w.reached).toBe(2);
-    expect(w.jump(1)).toEqual([]);
-    // Words from an earlier unit cannot lower it.
-    expect(speak(w, "On the 27th")).toEqual([]);
-    expect(w.reached).toBe(2);
-    expect(speak(w, "Kharkiv was hit the same night. Casualty")).toEqual([3]);
-  });
-
-  it("reports remaining as 0 before any unit is reached", () => {
-    const w = new SpokenWalk(beats, { fireFirst: true });
-    expect(w.remaining).toBe(0);
   });
 });

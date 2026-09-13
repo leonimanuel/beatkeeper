@@ -1,14 +1,23 @@
 import type { Adapter, NarrationClock, Timers } from "../clock.js";
 
-/** One message from the ElevenLabs streaming TTS websocket. */
+/**
+ * One message from the ElevenLabs streaming TTS websocket. The raw wire is
+ * snake_case (`char_start_times_ms`, `is_final`); the official SDK renames
+ * to camelCase. Both are accepted.
+ */
+export type ElevenLabsAlignment = {
+  chars: string[];
+  charStartTimesMs?: number[];
+  char_start_times_ms?: number[];
+  charDurationsMs?: number[];
+  char_durations_ms?: number[];
+};
 export type ElevenLabsMessage = {
-  alignment?: {
-    chars: string[];
-    charStartTimesMs: number[];
-    charDurationsMs?: number[];
-  } | null;
-  normalizedAlignment?: ElevenLabsMessage["alignment"];
+  alignment?: ElevenLabsAlignment | null;
+  normalizedAlignment?: ElevenLabsAlignment | null;
+  normalized_alignment?: ElevenLabsAlignment | null;
   isFinal?: boolean | null;
+  is_final?: boolean | null;
 };
 
 export type ElevenLabsAdapter<T = unknown> = Adapter<T> & {
@@ -28,8 +37,9 @@ export type ElevenLabsAdapter<T = unknown> = Adapter<T> & {
  *
  * Words are assembled from characters and fed whole, on whitespace.
  *
- * Written against the websocket message shape; not yet run against a live
- * socket.
+ * For the `/stream-input` (text-to-speech) socket. The v3 text-to-dialogue
+ * socket is a different protocol and is not covered here. Written against
+ * the documented message shape; not yet run against a live socket.
  */
 export function fromElevenLabs<T = unknown>(opts: { timers?: Timers } = {}): ElevenLabsAdapter<T> {
   const timers = {
@@ -73,20 +83,21 @@ export function fromElevenLabs<T = unknown>(opts: { timers?: Timers } = {}): Ele
       };
     },
     message(msg) {
-      const a = msg.alignment ?? msg.normalizedAlignment;
+      const a = msg.alignment ?? msg.normalizedAlignment ?? msg.normalized_alignment;
       if (a) {
+        const starts = a.charStartTimesMs ?? a.char_start_times_ms ?? [];
         for (let i = 0; i < a.chars.length; i++) {
           const ch = a.chars[i];
           if (/\s/.test(ch)) {
             push(word, wordStart);
             word = "";
           } else {
-            if (!word) wordStart = a.charStartTimesMs[i] ?? 0;
+            if (!word) wordStart = starts[i] ?? 0;
             word += ch;
           }
         }
       }
-      if (msg.isFinal) {
+      if (msg.isFinal || msg.is_final) {
         push(word, wordStart);
         word = "";
       }
