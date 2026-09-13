@@ -47,6 +47,9 @@ type Context = {
 /** The text-to-speech socket sends no context; a symbol cannot collide with one. */
 const DEFAULT_CONTEXT = Symbol("default");
 
+/** Audio-clock path: how often the playhead is read while a word is pending. */
+const POLL_MS = 20;
+
 const contextKey = (msg: ElevenLabsMessage): string | symbol =>
   msg.contextId ?? msg.context_id ?? DEFAULT_CONTEXT;
 
@@ -82,15 +85,41 @@ const contextKey = (msg: ElevenLabsMessage): string | symbol =>
  *
  * Alignment on the dialogue socket is opt-in: connect with
  * `sync_alignment=true` or no message will carry any.
+ *
+ * By default each word is scheduled once, at a wall-clock instant computed
+ * from `playbackStarted()`. That assumes playback never falls behind the
+ * wall: a buffering stall, a suspended AudioContext or a backgrounded tab
+ * (whose timers are throttled to once a second) all leave words landing
+ * while different audio, or none, is audible. Pass `audioTime` to schedule
+ * against the audio clock instead: it returns the playhead's position in
+ * stream ms (say `(ctx.currentTime - firstSampleAt) * 1000`), and a word is
+ * fed once the playhead has reached its offset, polled on a short interval.
+ * When playback stalls the playhead stops and so do the words.
  */
-export function fromElevenLabs<T = unknown>(opts: { timers?: Timers } = {}): ElevenLabsAdapter<T> {
+export function fromElevenLabs<T = unknown>(
+  opts: {
+    timers?: Timers;
+    /**
+     * Current playback position in stream ms. When given, words are fed as
+     * the playhead reaches them rather than at a wall-clock instant.
+     */
+    audioTime?: () => number;
+  } = {},
+): ElevenLabsAdapter<T> {
   const timers = {
     setTimeout: opts.timers?.setTimeout ?? ((fn: () => void, ms: number) => setTimeout(fn, ms)),
     clearTimeout: opts.timers?.clearTimeout ?? ((id: unknown) => clearTimeout(id as ReturnType<typeof setTimeout>)),
     now: opts.timers?.now ?? (() => Date.now()),
   };
+  const audioTime = opts.audioTime;
   let clock: NarrationClock<T> | null = null;
+  /** Wall-clock path: `timers.now()` at `playbackStarted()`. */
   let origin: number | null = null;
+  /** Audio-clock path: between `playbackStarted()` and `interrupted()`. */
+  let feeding = false;
+  /** Audio-clock path: the armed poll timer, if any. */
+  let poll: unknown = null;
+  /** Words not yet handed to the clock, in stream order. */
   const pending: { text: string; atMs: number }[] = [];
   const scheduled = new Set<unknown>();
   const contexts = new Map<string | symbol, Context>();
@@ -117,10 +146,40 @@ export function fromElevenLabs<T = unknown>(opts: { timers?: Timers } = {}): Ele
     }
   };
 
+  /**
+   * Audio-clock path. Feed every pending word the playhead has reached, then
+   * arm one poll for the rest: the shorter of the poll interval and the time
+   * to the next word, so a word lands on its ms when the playhead keeps pace
+   * and waits when it does not. No poll runs while nothing is pending.
+   */
+  const drain = () => {
+    if (!audioTime || !feeding || !clock) return;
+    const pos = audioTime();
+    while (clock && pending.length && pending[0].atMs <= pos) clock.feed(pending.shift()!.text);
+    if (poll !== null || !feeding || !clock || !pending.length) return;
+    const delay = Math.min(POLL_MS, Math.max(1, Math.ceil(pending[0].atMs - pos)));
+    poll = timers.setTimeout(() => {
+      poll = null;
+      drain();
+    }, delay);
+  };
+
+  const cancelPoll = () => {
+    if (poll === null) return;
+    timers.clearTimeout(poll);
+    poll = null;
+  };
+
   const push = (text: string, atMs: number) => {
     if (!text) return;
-    pending.push({ text, atMs });
-    flush();
+    // Keep stream order across interleaved contexts. The wall-clock path
+    // gets this for free from independent timers; the poll shifts from the
+    // front and needs it kept.
+    let i = pending.length;
+    while (i > 0 && pending[i - 1].atMs > atMs) i--;
+    pending.splice(i, 0, { text, atMs });
+    if (audioTime) drain();
+    else flush();
   };
 
   return {
@@ -130,6 +189,7 @@ export function fromElevenLabs<T = unknown>(opts: { timers?: Timers } = {}): Ele
         clock = null;
         for (const id of scheduled) timers.clearTimeout(id);
         scheduled.clear();
+        cancelPoll();
       };
     },
     message(msg) {
@@ -162,13 +222,20 @@ export function fromElevenLabs<T = unknown>(opts: { timers?: Timers } = {}): Ele
       }
     },
     playbackStarted() {
-      origin = timers.now();
       clock?.start();
-      flush();
+      if (audioTime) {
+        feeding = true;
+        drain();
+      } else {
+        origin = timers.now();
+        flush();
+      }
     },
     interrupted() {
       for (const id of scheduled) timers.clearTimeout(id);
       scheduled.clear();
+      cancelPoll();
+      feeding = false;
       pending.length = 0;
       contexts.clear();
       origin = null;
