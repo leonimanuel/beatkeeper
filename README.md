@@ -113,7 +113,7 @@ Providers expose that second lane in four ways, and an adapter's whole job is to
 |---|---|---|
 | Paced word events | Pipecat `botTtsText`, LiveKit aligned transcripts | Feed on arrival. The pipeline already held each word to its timestamp. |
 | Growing transcript | LiveKit `transcriptionReceived` segments | Feed only the newly appended suffix of each segment. |
-| Timestamps ahead of playback | ElevenLabs `alignment.char_start_times_ms` | Assemble words, schedule each at its offset from the moment playback started, then feed. |
+| Timestamps ahead of playback | ElevenLabs `alignment.char_start_times_ms` | Assemble words, accumulate each message's span into a running stream offset, schedule each word at that offset from the moment playback started, then feed. |
 | Nothing | A protocol with no audio timing (AG-UI); a TTS without alignment | Run the estimate clock (below), or have the agent side emit its own spoken events. |
 
 The point of putting this in adapters rather than in your application: timing behaviour differs not only between vendors but between models, endpoints, transports and SDK generations of the *same* vendor. The adapter is where that churn lives. Your application keeps reasoning in beats.
@@ -302,7 +302,13 @@ type Adapter<T> = { bind(clock: NarrationClock<T>): () => void };
 
 **LiveKit** — `fromLiveKit(room, { agentIdentity? })`. Binds `participantAttributesChanged` (agent state `speaking` starts; leaving it stops), `transcriptionReceived` (the appended suffix of each growing segment), `activeSpeakersChanged` (the local participant speaking interrupts). Requires `use_tts_aligned_transcript=True` on the `AgentSession`. Note: LiveKit has since moved transcripts to text streams on the `lk.transcription` topic; this adapter targets the event API and has not been run against a live room.
 
-**ElevenLabs** — `fromElevenLabs()`, for the `/stream-input` text-to-speech socket. Alignment arrives *with* the audio, ahead of playback, so the adapter assembles words from `alignment.chars` and schedules each at its `char_start_times_ms` offset from `playbackStarted()`. Accepts the raw snake_case wire shape and the SDK's camelCase. The v3 text-to-dialogue socket is a different protocol and is not covered. Not yet run against a live socket.
+**ElevenLabs** — `fromElevenLabs()`, for the `/stream-input` text-to-speech socket and the v3 `/text-to-dialogue/multi-stream-input` socket. Alignment arrives *with* the audio, ahead of playback, so the adapter assembles words from `alignment.chars` and schedules each one at its offset from `playbackStarted()`.
+
+That offset is not the `char_start_times_ms` value on the wire. **Those restart at zero in every message** — a message covering stream time 983ms–4180ms still numbers its own first character 0 — so the adapter accumulates them, adding each message's span (its last character's start plus that character's duration) as the message is consumed. The span is added even for a message that completes no word, since trailing punctuation arrives in a message of its own.
+
+The dialogue socket multiplexes contexts over one connection and ends each with its own `is_final`, so word assembly is kept per `context_id`. Its alignment is opt-in: connect with `sync_alignment=true` or no message carries any. Accepts the raw snake_case wire shape and the SDK's camelCase.
+
+Tested against captures from both live sockets ([fixtures](test/fixtures)).
 
 ```ts
 const el = fromElevenLabs();
