@@ -5,9 +5,9 @@ name: Release
 #   npm version <patch|minor|major>
 #   git push --follow-tags
 #
-# Requires an npm automation token in the NPM_TOKEN repository secret, or a
-# trusted publisher configured for this repo on npmjs.com (in which case the
-# NODE_AUTH_TOKEN line below can go).
+# Auth: an NPM_TOKEN secret for the first publish, then a trusted publisher
+# configured on npmjs.com and no secret at all. See the Publish step for why
+# that order is forced rather than chosen.
 #
 # Running this from the Actions tab (workflow_dispatch) is ALWAYS a rehearsal:
 # every publishing step is gated on the ref being a tag, so a manual run
@@ -70,6 +70,13 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
+      # Node 22 ships npm 10.x. Trusted publishing (OIDC, no token) needs
+      # npm >= 11.5.1, and the version that ships with the runner will not do.
+      - name: Use an npm that can do trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
+
       - run: npm ci
 
       - name: Pack and show contents
@@ -77,6 +84,17 @@ jobs:
           npm run clean && npm run build
           npm pack --dry-run
 
+      # Two auth paths, in the order they will be used over this package's life:
+      #
+      #   1. Bootstrap. A trusted publisher cannot be configured for a package
+      #      that does not exist yet, so the very first publish needs the
+      #      NPM_TOKEN secret. --provenance still applies, so 0.1.0 is attested.
+      #   2. Afterwards. Configure the trusted publisher on npmjs.com, delete
+      #      the NPM_TOKEN secret, and this same step authenticates over OIDC
+      #      with no long-lived credential anywhere. Provenance then happens
+      #      automatically -- the flag below becomes a no-op rather than a lie.
+      #
+      # An absent NPM_TOKEN is the steady state, not a misconfiguration.
       - name: Publish to npm
         if: startsWith(github.ref, 'refs/tags/')
         run: npm publish --provenance --access public
