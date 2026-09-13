@@ -58,4 +58,12 @@ Maintainers only:
 1. Move `## Unreleased` entries in `CHANGELOG.md` under a new version heading.
 2. `npm version <patch|minor|major>` — this updates `package.json`, the lockfile, and creates the tag.
 3. `git push --follow-tags`.
-4. Publishing runs from the `release` workflow on tag push, with npm provenance.
+4. The `release` workflow verifies the tagged commit, refuses a tag that disagrees with `package.json`, publishes, and opens a GitHub release.
+
+Nothing is published from a laptop. Running the workflow manually from the Actions tab is always a rehearsal — every publishing step is gated on the ref being a tag — so it is a safe way to watch the pipeline before cutting a real version.
+
+### Authentication
+
+beatkeeper publishes with [trusted publishing](https://docs.npmjs.com/trusted-publishers): the runner authenticates to npm over OIDC and the registry issues a short-lived credential bound to that one workflow run. There is no long-lived token in repository secrets, and provenance attestations are generated automatically.
+
+The one exception was the first release. A trusted publisher cannot be configured for a package that does not exist yet, so `0.1.0` was published with a temporary `NPM_TOKEN` secret, which was deleted once the trusted publisher was in place. The workflow still reads `NPM_TOKEN` if present, purely so that bootstrap path stays available; an absent secret is the normal state.
