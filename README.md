@@ -7,7 +7,7 @@
 
 Keeps a voice agent's interface on the words the listener is *hearing*, not the words the model *wrote*.
 
-You describe the narration as an ordered list of beats: the words that will be spoken, plus whatever your UI needs at that moment. Your voice stack tells beatkeeper what is audible as it becomes audible. beatkeeper tells you which beat the listener is on. It renders nothing and touches no audio.
+A narration is described as an ordered list of beats: the words that will be spoken, plus whatever the interface needs at that moment. The voice stack reports what is audible as it becomes audible. beatkeeper resolves which beat the listener is on. It renders nothing and touches no audio.
 
 ---
 
@@ -17,7 +17,7 @@ You describe the narration as an ordered list of beats: the words that will be s
 npm install beatkeeper
 ```
 
-A beat is your own object with one reserved field. `prose` is the words that will be spoken; everything else is whatever the picture needs when they are.
+A beat is an application object with one reserved field. `prose` is the words that will be spoken; everything else is whatever the picture needs when they are.
 
 ```ts
 const beats = [
@@ -26,7 +26,7 @@ const beats = [
 ];
 ```
 
-Make a clock over them, and bind it to your voice stack. Pipecat here; LiveKit, ElevenLabs and AG-UI are the same shape:
+A clock over those beats binds to the voice stack. Pipecat here; LiveKit, ElevenLabs and AG-UI take the same shape:
 
 ```ts
 import { createNarrationClock } from "beatkeeper";
@@ -40,24 +40,24 @@ const clock = createNarrationClock({
 const unbind = fromPipecat(client).bind(clock);
 ```
 
-That is the whole integration. From there it runs itself: the adapter hands the clock each word as it becomes audible, and `onAdvance` fires on the word that crosses into a new beat — not on every word, and not on a timer:
+That is the whole integration. The adapter hands the clock each word as it becomes audible, and `onAdvance` fires on the word that crosses into a new beat — not on every word, and not on a timer:
 
 | As the voice says | beatkeeper |
 |---|---|
-| *(nothing yet)* | `clock.index` is `0` — beat 0 is the picture you were already showing |
-| `"Fighting"` `"increased"` `"near"` `"Pokrovsk."` | walks through beat 0. Nothing fires: beat 0 is on screen already |
+| *(nothing yet)* | `clock.index` is `0` — beat 0 is the picture already on screen |
+| `"Fighting"` `"increased"` `"near"` `"Pokrovsk."` | walks through beat 0. Nothing fires: beat 0 is showing already |
 | `"Further"` | **`onAdvance(1, "spoken", beats[1])`** → `focusMap(zaporizhzhia)` |
 | `"south,"` `"activity"` … | walks through beat 1. `clock.index` is `1`, the map has already moved |
 
-The map moves when the voice reaches the sentence that names the place — not when the model finished writing it, seconds earlier. Nothing polls, and no timers are involved unless you ask for [an estimate](#no-alignment-at-all): the words are the clock.
+The map moves when the voice reaches the sentence that names the place — not when the model finished writing it, seconds earlier. Nothing polls, and no timers run unless an [estimate](#no-alignment-at-all) is configured: the words are the clock.
 
-Note which callbacks you get. By default the index starts at 0, because beat 0 is the picture you were already showing when the voice began, so the first `onAdvance` is the *crossing* into beat 1. Pass `fireFirst: true` and the index starts at `-1` and beat 0 is announced on its first word instead — right for a caption, wrong for a map at rest.
+The index starts at `0`, on the assumption that beat 0 is the picture already on screen when the voice begins, so the first `onAdvance` reports the *crossing* into beat 1. With `fireFirst: true` the index starts at `-1` and beat 0 is announced on its own first word instead — right for a caption, wrong for a map at rest.
 
-If you would rather pull than be pushed, `clock.index`, `clock.progress` and `clock.remaining` are readable at any time.
+`clock.index`, `clock.progress` and `clock.remaining` are readable at any time, for a caller that would rather pull than be pushed.
 
-### What the adapter is doing
+### The four calls underneath
 
-No magic, and worth seeing once, because it is the entire contract. `fromPipecat` binds four listeners:
+`fromPipecat` binds four listeners:
 
 ```ts
 client.on("botStartedSpeaking",  () => clock.start());
@@ -66,18 +66,18 @@ client.on("botStoppedSpeaking",  () => clock.stop());
 client.on("userStartedSpeaking", () => clock.interrupt());
 ```
 
-Don't write that yourself on Pipecat — `fromPipecat` is those four plus teardown and the [`bot-output` variant](#pipecat). But that is all an adapter ever is, so a stack without one is the same four calls against its own events:
+`fromPipecat` adds teardown and the [`bot-output` variant](#pipecat) on top of those four. The four are the entire contract, so a stack with no adapter binds the same calls to its own events:
 
 | Call | When |
 |---|---|
 | `clock.start()` | the bot starts speaking |
-| `clock.feed(text)` | text becomes **audible** — not when it is generated or sent to the synthesiser |
+| `clock.feed(text)` | text becomes **audible** — not when it is generated, and not when it is sent to the synthesiser |
 | `clock.stop()` | the bot stops speaking |
-| `clock.interrupt()` | the user barges in, if your stack reports it |
+| `clock.interrupt()` | the user barges in, where the stack reports it |
 
-`feed` is the one that carries the whole idea, and [Problem 1](#problem-1-every-stack-reports-audible-differently) is about how differently each stack tells you that moment has arrived. It takes any chunk size — a word, a clause, a whole sentence — and `onAdvance` runs synchronously inside it, so `clock.index` is already current when your handler returns.
+`feed` carries the whole idea, and [Problem 1](#problem-1-every-stack-reports-audible-differently) is about how differently each stack signals that the moment has arrived. It accepts any chunk size — a word, a clause, a whole sentence — and `onAdvance` runs synchronously inside it, so `clock.index` is already current when the handler returns.
 
-See [Adapters](#adapters) for the other three and for writing your own.
+[Adapters](#adapters) covers the other three and writing a new one.
 
 ### React
 
@@ -92,7 +92,7 @@ return <Map focus={beats[index]?.map} />;
 
 One clock for the component's lifetime. A `beats` array that extends the previous one (same prose, more on the end) is appended to; any other array resets the clock.
 
-When the picture is driven by more than the index (Attaché keeps the clock inside a director object that also owns a spotlight and the graph), skip the hook and hold the clock in a ref:
+When the picture is driven by more than the index — Attaché keeps the clock inside a director object that also owns a spotlight and the graph — a ref holds the clock instead of the hook:
 
 ```tsx
 const clockRef = useRef<NarrationClock<Beat> | null>(null);
@@ -106,11 +106,11 @@ useEffect(() => {
 
 ---
 
-The rest of this README is about *why* keeping a picture on the voice is harder than it looks, and what beatkeeper does about it. For the reference material, skip to [API](#api).
+The rest of this README is about *why* keeping a picture on the voice is harder than it looks, and what beatkeeper does about it. Reference material begins at [API](#api).
 
 ## Why "when the model wrote it" is the wrong moment
 
-A voice agent writes its answer in two seconds and takes twenty to say it. If your map, chart or graph moves when text is *generated*, all of its moves happen in the first two seconds and the picture sits on the last beat while the voice is still on the first. If it moves when text is *sent to the synthesiser*, it is closer, but still ahead by however much audio is buffered between the synthesiser and the speaker, which is seconds and varies.
+A voice agent writes its answer in two seconds and takes twenty to say it. A map, chart or graph that moves when text is *generated* makes all of its moves in the first two seconds, then sits on the last beat while the voice is still on the first. Moving when text is *sent to the synthesiser* is closer, but still ahead of the ear by however much audio is buffered between the synthesiser and the speaker, which is seconds and varies.
 
 ```
 generated  →  sent to TTS  →  synthesised  →  received by the client  →  audible
@@ -118,13 +118,13 @@ generated  →  sent to TTS  →  synthesised  →  received by the client  → 
 
 Only the last state is the one to render on. Everything before it is a guess with a timestamp attached.
 
-beatkeeper's job is to turn whatever your stack knows about "audible" into one thing: an index into your beats that moves when the listener's ear does.
+beatkeeper turns whatever a stack knows about "audible" into one thing: an index into the beats that moves when the listener's ear does.
 
 ---
 
 ## Problem 1: every stack reports "audible" differently
 
-There is no standard `spoken_at` field. What exists is four different shapes, and one vendor can move between them when you change model, endpoint, transport or SDK version. These are real payloads.
+There is no standard `spoken_at` field. What exists is four different shapes, and one vendor can move between them across a change of model, endpoint, transport or SDK version. These are real payloads.
 
 **Pipecat, one RTVI message per word, released at the word's own time on the bot's output clock:**
 
@@ -173,15 +173,15 @@ One call: `clock.feed(text)`, made when `text` is audible. Everything vendor-spe
 | Paced word events | Pipecat `bot-tts-text`, LiveKit aligned transcripts | Feed on arrival. The pipeline already held the word to its time. |
 | A transcript that grows | Pipecat `bot-output`, LiveKit segments | Feed only the newly appended suffix. |
 | Timings ahead of playback | ElevenLabs websocket | Assemble words from characters, accumulate each message's span into a running stream offset, schedule each word at that offset from the moment playback started. |
-| Nothing | AG-UI; a TTS without alignment | Run the [estimate](#no-alignment-at-all), or have the agent side emit its own spoken events. |
+| Nothing | AG-UI; a TTS without alignment | Run the [estimate](#no-alignment-at-all), or emit spoken events from the agent side. |
 
-Adapters ship for Pipecat, LiveKit, ElevenLabs and AG-UI, each a single short file; read one and you can write your own. The application never sees a payload. It reasons in beats.
+Adapters ship for Pipecat, LiveKit, ElevenLabs and AG-UI, each a single short file that a new one can be written from. The application never sees a payload. It reasons in beats.
 
 ---
 
-## Problem 2: the voice does not say what you wrote
+## Problem 2: the voice does not say what the script says
 
-The words your stack reports back are the TTS's reading of your text, not your text. Expect, for a script line and what comes back:
+The words a stack reports back are the TTS's reading of the script, not the script itself. For one line, and what returns:
 
 ```
 script:  On the 27th a strike hit the Orlivka crossing — $1.7B in damage.
@@ -214,18 +214,18 @@ A `normalize` option maps tokens further (number words, stems, a language's infl
 
 ---
 
-## Problem 3: chunk sizes vary, and none of them is your beat
+## Problem 3: chunk sizes vary, and none of them is the beat
 
-Four granularities are in play and only one is yours:
+Four granularities are in play, and only the last belongs to the application:
 
 ```
 LLM generation     tokens, fragments              the model's
 TTS input          sentences or clauses           the voice pipeline's; prosody needs context
 TTS alignment      words or characters            the voice pipeline's
-beats              wherever the picture moves     yours
+beats              wherever the picture moves     the application's
 ```
 
-Send the synthesiser whole sentences; it sounds better that way. Cut your beats wherever the picture should change, including inside a sentence, as long as the alignment lane is at least word-grained:
+Whole sentences to the synthesiser sound better, so beats are cut independently of them: wherever the picture should change, including inside a sentence, as long as the alignment lane is at least word-grained.
 
 ```ts
 // One sentence to the synthesiser:
@@ -257,7 +257,7 @@ Beats can also arrive while the voice is already speaking: `clock.append(beat)` 
 
 ### When the stream stalls, runs ahead, or gets cut off
 
-**The player buffers.** Text fed to the clock is taken to be audible *now*. Pipecat's word events arrive within a network hop of being audible; if your player buffers on top of that, hold the feed by the buffered amount yourself (Attaché measures the player's lag and delays each word by it). Do not guess a constant.
+**The player buffers.** Text fed to the clock is taken to be audible *now*. Pipecat's word events arrive within a network hop of being audible; a player that buffers on top of that shifts the whole stream later, and the feed has to be held by the same amount. Attaché measures the player's lag and delays each word by it — a measured lag rather than a constant, since the buffer varies.
 
 **A source that knows.** `clock.sync(index)` re-anchors the walk at a beat, now. It is for a caller that knows, not a guess: a server that tracks playback, a caption track with its own timing.
 
@@ -269,13 +269,13 @@ onServerMessage((m) => { if (m.type === "beat-start") hinted.hint(m.index); });
 onTtsText((text) => hinted.feed(text));       // through the wrapper, so words beat hints
 ```
 
-**Barge-in.** `clock.interrupt()` holds the index where it is. When the next turn's beats exist, `clock.reset(nextBeats)`.
+**Barge-in.** `clock.interrupt()` holds the index where it is. Once the next turn's beats exist, `clock.reset(nextBeats)` takes them.
 
-**Silence between utterances.** `stop()` when the bot stops speaking pauses the estimate clock; the next `start()` resumes it where it paused rather than from the first beat, so binding the pair to a pipeline's per-utterance events is safe.
+**Silence between utterances.** `stop()` at the end of a turn pauses the estimate clock; the next `start()` resumes it where it paused rather than from the first beat, so the pair binds safely to a pipeline's per-utterance events.
 
 ### No alignment at all
 
-Some stacks give you nothing usable. Give the clock an `estimate(beat)` in milliseconds and call `start()` when the bot starts speaking; it steps through the beats on that schedule.
+Some stacks report nothing usable. An `estimate(beat)` in milliseconds, with `start()` called when the bot starts speaking, steps the index through the beats on that schedule.
 
 ```ts
 createNarrationClock({
@@ -285,7 +285,7 @@ createNarrationClock({
 });
 ```
 
-It is wrong by however much the voice's real pace differs, and the error accumulates, so it is a degraded mode, not a default. The moment a spoken word reaches any beat, every pending estimate is cancelled and the estimate does not resume for the rest of the run: a clock that flips between evidence and guesswork produces a picture that stutters. When neither words nor an estimate apply, beatkeeper holds rather than inventing certainty.
+It is wrong by however much the voice's real pace differs, and the error accumulates, which makes it a degraded mode rather than a default. The moment a spoken word reaches any beat, every pending estimate is cancelled and the estimate does not resume for the rest of the run: a clock that flips between evidence and guesswork produces a picture that stutters. When neither words nor an estimate apply, beatkeeper holds rather than inventing certainty.
 
 ---
 
@@ -307,12 +307,12 @@ createNarrationClock<T>({
 
 | Member          | |
 |-----------------|---|
-| `start()`       | Begin the estimate clock, or resume it after `stop()`. Call when the bot starts speaking. |
+| `start()`       | Begin the estimate clock, or resume it after `stop()`. Called when the bot starts speaking. |
 | `feed(text)`    | Spoken text, as it becomes audible. Any chunk size. |
 | `append(unit)`  | Add a unit to the end. |
 | `sync(index)`   | Assert that `index` is being heard. |
 | `interrupt()`   | Pause the clocks, hold the index. |
-| `stop()`        | Pause the clocks. Call when the bot stops speaking. |
+| `stop()`        | Pause the clocks. Called when the bot stops speaking. |
 | `reset(units?)` | Replace the units; back to rest. |
 | `index`         | Current index. `-1` before the first unit when `fireFirst` is set. |
 | `source`        | `"spoken"`, `"estimate"`, `"sync"`, or `"idle"`. |
@@ -353,6 +353,8 @@ compose(...adapters)
 type Adapter<T> = { bind(clock: NarrationClock<T>): () => void };
 ```
 
+Every adapter reduces to the [four calls](#the-four-calls-underneath); a stack without one binds them directly.
+
 ### Pipecat
 
 `fromPipecat(client, { source? })`. Binds `botStartedSpeaking`, `botStoppedSpeaking`, `userStartedSpeaking`, and one of the two audible-text signals: `botTtsText` (default; one event per word, needs alignment forwarding on the server's TTS service) or `botOutput` with `spoken_progress` (segment-scoped; only the newly heard suffix is fed). Never both; they carry the same words.
@@ -377,11 +379,11 @@ audio.onplay = () => el.playbackStarted();
 const el = fromElevenLabs({ audioTime: () => (ctx.currentTime - firstSampleAt) * 1000 });
 ```
 
-Three things about it are worth knowing:
+Three properties of that scheduling:
 
 - **The offset is not the wire value.** `char_start_times_ms` restarts at zero in every message, so the adapter accumulates each message's span (last character's start plus its duration) as it goes, whether or not the message completed a word.
 - **The dialogue socket multiplexes contexts**, so assembly is kept per `context_id`. Its alignment is opt-in (`sync_alignment=true`).
-- **Wall clock versus audio clock.** By default words are scheduled with wall-clock timers from `playbackStarted()`, which drift from the audio whenever playback falls behind the wall: a buffering stall, a suspended `AudioContext`, a backgrounded tab whose timers are throttled. Pass `audioTime` to schedule against the audio clock instead — it returns the playhead's position in stream ms, and each word is fed as the playhead reaches it, so a stall holds the words with the audio. Use it whenever you own the playback pipeline; the default is for an `<audio>` element you cannot read a playhead from.
+- **Wall clock versus audio clock.** By default words are scheduled with wall-clock timers from `playbackStarted()`, which drift from the audio whenever playback falls behind the wall: a buffering stall, a suspended `AudioContext`, a backgrounded tab whose timers are throttled. `audioTime` schedules against the audio clock instead — it returns the playhead's position in stream ms, and each word is fed as the playhead reaches it, so a stall holds the words with the audio. It applies wherever the playback pipeline is under the application's control; the default suits an `<audio>` element whose playhead cannot be read.
 
 Tested against captures from both live sockets ([fixtures](test/fixtures)). The HTTP `with-timestamps` endpoint is a different shape and is not covered.
 
@@ -389,18 +391,14 @@ Tested against captures from both live sockets ([fixtures](test/fixtures)). The 
 
 `fromAgUi(agent, names?)`. AG-UI carries no audio timing, so units and spoken text travel as `Custom` events (`beat`, `beat.spoken`, `beat.started`, `beat.interrupted`) that the agent side must emit from its own TTS word stream. Not yet run against a live agent.
 
-### Your own
-
-Three calls: `clock.start()` when speech starts, `clock.feed(text)` when text is audible, `clock.stop()` when speech ends. `clock.interrupt()` on barge-in if the stack has one.
-
 ---
 
 ## Non-goals
 
 - Audio: transport, buffering, playback, codecs.
-- Your beat schema. Only `prose` is read.
+- The beat schema. Only `prose` is read.
 - Rendering or animation. The output is an index.
-- Repairing a broken provider stream, or de-duplicating your own messages.
+- Repairing a broken provider stream, or de-duplicating a caller's own messages.
 - Guessing the audible position when no evidence exists. It holds.
 
 ## Contributing
