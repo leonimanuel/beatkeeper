@@ -9,17 +9,27 @@ Keeps a voice agent's interface on the words the listener is *hearing*, not the 
 
 You describe the narration as an ordered list of beats: the words that will be spoken, plus whatever your UI needs at that moment. Your voice stack tells beatkeeper what is audible as it becomes audible. beatkeeper tells you which beat the listener is on. It renders nothing and touches no audio.
 
+---
+
+## Quick start
+
 ```
 npm install beatkeeper
 ```
 
-```ts
-import { createNarrationClock } from "beatkeeper";
+A beat is your own object with one reserved field. `prose` is the words that will be spoken; everything else is whatever the picture needs when they are.
 
+```ts
 const beats = [
   { prose: "Fighting increased near Pokrovsk.",                    map: pokrovsk },
   { prose: "Further south, activity shifted toward Zaporizhzhia.", map: zaporizhzhia },
 ];
+```
+
+Make a clock over them, and tell it what the listener can hear:
+
+```ts
+import { createNarrationClock } from "beatkeeper";
 
 const clock = createNarrationClock({
   units: beats,
@@ -32,22 +42,37 @@ client.on("botStoppedSpeaking",  () => clock.stop());
 client.on("userStartedSpeaking", () => clock.interrupt());
 ```
 
-That is the whole integration. The map moves when the voice reaches the sentence that names the place — not when the model finished writing it, seconds earlier.
+That is the whole integration. From there it runs itself. Every word the voice speaks goes into `feed()`, and `onAdvance` fires on the word that crosses into a new beat — not on every word, and not on a timer:
 
-Only `prose` is read. Everything else on a beat is yours and comes back untouched in `onAdvance(index, source, beat)`, which runs synchronously inside `feed()`, so `clock.index` is already current when your handler returns.
+```
+index = 0                       beat 0 is already on screen; nothing has been said yet
 
----
+feed("Fighting")                the walk opens on beat 0 and moves through its words.
+feed("increased")               The picture does not change: it is already showing beat 0.
+feed("near")
+feed("Pokrovsk.")               cursor now at the end of beat 0
 
-## Quick start
+feed("Further")            ──►  onAdvance(1, "spoken", beats[1])  →  focusMap(zaporizhzhia)
+feed("south,")                  index = 1, and the map has already moved
+feed("activity")
+```
 
-If your stack is Pipecat, LiveKit, ElevenLabs or AG-UI, an adapter does the binding above for you:
+The map moves when the voice reaches the sentence that names the place — not when the model finished writing it, seconds earlier. Nothing polls, and no timers are involved unless you ask for [an estimate](#no-alignment-at-all): the words are the clock.
+
+Note which callbacks you get. By default the index starts at 0, because beat 0 is the picture you were already showing when the voice began, so the first `onAdvance` is the *crossing* into beat 1. Pass `fireFirst: true` and the index starts at `-1` and beat 0 is announced on its first word instead — right for a caption, wrong for a map at rest.
+
+`onAdvance` runs synchronously inside `feed()`, so `clock.index` is already current when your handler returns. If you would rather pull than be pushed, read `clock.index`, `clock.progress` and `clock.remaining` at any time.
+
+### With an adapter
+
+Those four `client.on` lines are the part that differs per stack, so they ship as adapters. For Pipecat, LiveKit, ElevenLabs and AG-UI the whole binding is one line:
 
 ```ts
 import { fromPipecat } from "beatkeeper/pipecat";
 const unbind = fromPipecat(client).bind(clock);
 ```
 
-See [Adapters](#adapters) for the other three and for writing your own.
+See [Adapters](#adapters) for the other three and for writing your own — the contract is the same four calls.
 
 ### React
 
