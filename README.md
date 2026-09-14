@@ -42,24 +42,18 @@ const unbind = fromPipecat(client).bind(clock);
 
 That is the whole integration. From there it runs itself: the adapter hands the clock each word as it becomes audible, and `onAdvance` fires on the word that crosses into a new beat — not on every word, and not on a timer:
 
-```
-index = 0                       beat 0 is already on screen; nothing has been said yet
-
-feed("Fighting")                the walk opens on beat 0 and moves through its words.
-feed("increased")               The picture does not change: it is already showing beat 0.
-feed("near")
-feed("Pokrovsk.")               cursor now at the end of beat 0
-
-feed("Further")            ──►  onAdvance(1, "spoken", beats[1])  →  focusMap(zaporizhzhia)
-feed("south,")                  index = 1, and the map has already moved
-feed("activity")
-```
+| As the voice says | beatkeeper |
+|---|---|
+| *(nothing yet)* | `clock.index` is `0` — beat 0 is the picture you were already showing |
+| `"Fighting"` `"increased"` `"near"` `"Pokrovsk."` | walks through beat 0. Nothing fires: beat 0 is on screen already |
+| `"Further"` | **`onAdvance(1, "spoken", beats[1])`** → `focusMap(zaporizhzhia)` |
+| `"south,"` `"activity"` … | walks through beat 1. `clock.index` is `1`, the map has already moved |
 
 The map moves when the voice reaches the sentence that names the place — not when the model finished writing it, seconds earlier. Nothing polls, and no timers are involved unless you ask for [an estimate](#no-alignment-at-all): the words are the clock.
 
 Note which callbacks you get. By default the index starts at 0, because beat 0 is the picture you were already showing when the voice began, so the first `onAdvance` is the *crossing* into beat 1. Pass `fireFirst: true` and the index starts at `-1` and beat 0 is announced on its first word instead — right for a caption, wrong for a map at rest.
 
-`onAdvance` runs synchronously inside `feed()`, so `clock.index` is already current when your handler returns. If you would rather pull than be pushed, read `clock.index`, `clock.progress` and `clock.remaining` at any time.
+If you would rather pull than be pushed, `clock.index`, `clock.progress` and `clock.remaining` are readable at any time.
 
 ### What the adapter is doing
 
@@ -81,7 +75,9 @@ Don't write that yourself on Pipecat — `fromPipecat` is those four plus teardo
 | `clock.stop()` | the bot stops speaking |
 | `clock.interrupt()` | the user barges in, if your stack reports it |
 
-`feed` is the one that carries the whole idea, and [Problem 1](#problem-1-every-stack-reports-audible-differently) is about how differently each stack tells you that moment has arrived. See [Adapters](#adapters) for the other three and for writing your own.
+`feed` is the one that carries the whole idea, and [Problem 1](#problem-1-every-stack-reports-audible-differently) is about how differently each stack tells you that moment has arrived. It takes any chunk size — a word, a clause, a whole sentence — and `onAdvance` runs synchronously inside it, so `clock.index` is already current when your handler returns.
+
+See [Adapters](#adapters) for the other three and for writing your own.
 
 ### React
 
