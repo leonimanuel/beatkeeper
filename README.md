@@ -26,23 +26,21 @@ const beats = [
 ];
 ```
 
-Make a clock over them, and tell it what the listener can hear:
+Make a clock over them, and bind it to your voice stack. Pipecat here; LiveKit, ElevenLabs and AG-UI are the same shape:
 
 ```ts
 import { createNarrationClock } from "beatkeeper";
+import { fromPipecat } from "beatkeeper/pipecat";
 
 const clock = createNarrationClock({
   units: beats,
   onAdvance: (index, source, beat) => focusMap(beat.map),
 });
 
-client.on("botStartedSpeaking",  () => clock.start());
-client.on("botTtsText",          (e) => clock.feed(e.text));   // words, as they are heard
-client.on("botStoppedSpeaking",  () => clock.stop());
-client.on("userStartedSpeaking", () => clock.interrupt());
+const unbind = fromPipecat(client).bind(clock);
 ```
 
-That is the whole integration. From there it runs itself. Every word the voice speaks goes into `feed()`, and `onAdvance` fires on the word that crosses into a new beat — not on every word, and not on a timer:
+That is the whole integration. From there it runs itself: the adapter hands the clock each word as it becomes audible, and `onAdvance` fires on the word that crosses into a new beat — not on every word, and not on a timer:
 
 ```
 index = 0                       beat 0 is already on screen; nothing has been said yet
@@ -63,16 +61,27 @@ Note which callbacks you get. By default the index starts at 0, because beat 0 i
 
 `onAdvance` runs synchronously inside `feed()`, so `clock.index` is already current when your handler returns. If you would rather pull than be pushed, read `clock.index`, `clock.progress` and `clock.remaining` at any time.
 
-### With an adapter
+### What the adapter is doing
 
-Those four `client.on` lines are the part that differs per stack, so they ship as adapters. For Pipecat, LiveKit, ElevenLabs and AG-UI the whole binding is one line:
+No magic, and worth seeing once, because it is the entire contract. `fromPipecat` binds four listeners:
 
 ```ts
-import { fromPipecat } from "beatkeeper/pipecat";
-const unbind = fromPipecat(client).bind(clock);
+client.on("botStartedSpeaking",  () => clock.start());
+client.on("botTtsText",          (e) => clock.feed(e.text));   // words, as they are heard
+client.on("botStoppedSpeaking",  () => clock.stop());
+client.on("userStartedSpeaking", () => clock.interrupt());
 ```
 
-See [Adapters](#adapters) for the other three and for writing your own — the contract is the same four calls.
+Don't write that yourself on Pipecat — `fromPipecat` is those four plus teardown and the [`bot-output` variant](#pipecat). But that is all an adapter ever is, so a stack without one is the same four calls against its own events:
+
+| Call | When |
+|---|---|
+| `clock.start()` | the bot starts speaking |
+| `clock.feed(text)` | text becomes **audible** — not when it is generated or sent to the synthesiser |
+| `clock.stop()` | the bot stops speaking |
+| `clock.interrupt()` | the user barges in, if your stack reports it |
+
+`feed` is the one that carries the whole idea, and [Problem 1](#problem-1-every-stack-reports-audible-differently) is about how differently each stack tells you that moment has arrived. See [Adapters](#adapters) for the other three and for writing your own.
 
 ### React
 
