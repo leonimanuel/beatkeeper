@@ -26,22 +26,57 @@ const clock = createNarrationClock({
   onAdvance: (index, source, beat) => focusMap(beat.map),
 });
 
-client.on("botStartedSpeaking", () => clock.start());
-client.on("botTtsText",         (e) => clock.feed(e.text));  // words, as they are heard
-client.on("botStoppedSpeaking", () => clock.stop());
+client.on("botStartedSpeaking",  () => clock.start());
+client.on("botTtsText",          (e) => clock.feed(e.text));   // words, as they are heard
+client.on("botStoppedSpeaking",  () => clock.stop());
+client.on("userStartedSpeaking", () => clock.interrupt());
 ```
 
 That is the whole integration. The map moves when the voice reaches the sentence that names the place — not when the model finished writing it, seconds earlier.
 
-The rest of this README is about *why* that is harder than it looks, and what beatkeeper does about it. If you would rather start from working code, skip to [Quick start](#quick-start); if your stack is Pipecat, LiveKit, ElevenLabs or AG-UI, [Adapters](#adapters) does the binding above for you in one line.
-
-> **[VIDEO A — Attaché, 15s]** The landing demo at attache.news. The bot reads the founder's briefing; as each sentence is spoken the story graph lights the story being told and draws the bridge to the one it connects to. Subtitle visible, so word-to-picture timing is legible.
-
-> **[VIDEO B — sitrep, 10s]** The map flying to a place on the beat that names it, with the timeline sweep; the spoken sentence under the frame.
-
-Both run on the same 40 lines of integration shown under [Quick start](#quick-start).
+Only `prose` is read. Everything else on a beat is yours and comes back untouched in `onAdvance(index, source, beat)`, which runs synchronously inside `feed()`, so `clock.index` is already current when your handler returns.
 
 ---
+
+## Quick start
+
+If your stack is Pipecat, LiveKit, ElevenLabs or AG-UI, an adapter does the binding above for you:
+
+```ts
+import { fromPipecat } from "beatkeeper/pipecat";
+const unbind = fromPipecat(client).bind(clock);
+```
+
+See [Adapters](#adapters) for the other three and for writing your own.
+
+### React
+
+```tsx
+import { useNarrationClock } from "beatkeeper/react";
+import { fromPipecat } from "beatkeeper/pipecat";
+
+const adapter = useMemo(() => fromPipecat(client), [client]);
+const { index } = useNarrationClock(beats, { adapter });
+return <Map focus={beats[index]?.map} />;
+```
+
+One clock for the component's lifetime. A `beats` array that extends the previous one (same prose, more on the end) is appended to; any other array resets the clock.
+
+When the picture is driven by more than the index (Attaché keeps the clock inside a director object that also owns a spotlight and the graph), skip the hook and hold the clock in a ref:
+
+```tsx
+const clockRef = useRef<NarrationClock<Beat> | null>(null);
+useEffect(() => {
+  const clock = createNarrationClock({ units: beats, onAdvance: (i) => setIndex(i) });
+  clockRef.current = clock;
+  return () => clock.stop();
+}, []);
+// callbacks: clockRef.current?.feed(text)
+```
+
+---
+
+The rest of this README is about *why* keeping a picture on the voice is harder than it looks, and what beatkeeper does about it. For the reference material, skip to [API](#api).
 
 ## Why "when the model wrote it" is the wrong moment
 
@@ -53,19 +88,7 @@ generated  →  sent to TTS  →  synthesised  →  received by the client  → 
 
 Only the last state is the one to render on. Everything before it is a guess with a timestamp attached.
 
-> **[VISUAL 1 — hero]** Two rows on one time axis. Top: "model finished writing" at 2s. Bottom: the voice reaching beats 1, 2, 3 at 4s, 9s, 15s. Caption: the picture should change at the bottom marks.
-
 beatkeeper's job is to turn whatever your stack knows about "audible" into one thing: an index into your beats that moves when the listener's ear does.
-
-```ts
-const beats = [
-  { prose: "Fighting increased near Pokrovsk.",                    map: pokrovsk },
-  { prose: "Further south, activity shifted toward Zaporizhzhia.", map: zaporizhzhia },
-  { prose: "Meanwhile, strikes were reported inside Russia.",      map: russia },
-];
-```
-
-Only `prose` is read. Everything else is yours and comes back untouched in `onAdvance(index, source, beat)`.
 
 ---
 
@@ -120,7 +143,7 @@ One call: `clock.feed(text)`, made when `text` is audible. Everything vendor-spe
 | Paced word events | Pipecat `bot-tts-text`, LiveKit aligned transcripts | Feed on arrival. The pipeline already held the word to its time. |
 | A transcript that grows | Pipecat `bot-output`, LiveKit segments | Feed only the newly appended suffix. |
 | Timings ahead of playback | ElevenLabs websocket | Assemble words from characters, accumulate each message's span into a running stream offset, schedule each word at that offset from the moment playback started. |
-| Nothing | AG-UI; a TTS without alignment | Run the [estimate](#problem-5-no-alignment-at-all), or have the agent side emit its own spoken events. |
+| Nothing | AG-UI; a TTS without alignment | Run the [estimate](#no-alignment-at-all), or have the agent side emit its own spoken events. |
 
 Adapters ship for Pipecat, LiveKit, ElevenLabs and AG-UI, each a single short file; read one and you can write your own. The application never sees a payload. It reasons in beats.
 
@@ -156,8 +179,6 @@ The rules, in the order they are tried:
 4. **Nothing matched.** Hold. But after three words in a row that cannot be placed once the cursor is at the end of a beat, the next beat has started however it was read.
 
 The bar is asymmetric because the cost is: moving inside a beat changes nothing on screen, crossing into the next one does. The index only ever moves forward. It may skip a beat when the voice does; it never goes back, because a picture that rewinds reads as broken in a way that one running slightly behind does not.
-
-> **[VISUAL 2 — the walk]** Three stills of the diagram above: cursor at "27th", holding through "twenty" and "seventh", jumping to "a". A fourth: a stray "the" not crossing into the next beat.
 
 A `normalize` option maps tokens further (number words, stems, a language's inflections) and is applied to script and speech alike.
 
@@ -202,7 +223,9 @@ Beats can also arrive while the voice is already speaking: `clock.append(beat)` 
 
 ---
 
-## Problem 4: the stream stalls, runs ahead, or gets cut off
+## Modes and edge cases
+
+### When the stream stalls, runs ahead, or gets cut off
 
 **The player buffers.** Text fed to the clock is taken to be audible *now*. Pipecat's word events arrive within a network hop of being audible; if your player buffers on top of that, hold the feed by the buffered amount yourself (Attaché measures the player's lag and delays each word by it). Do not guess a constant.
 
@@ -220,9 +243,7 @@ onTtsText((text) => hinted.feed(text));       // through the wrapper, so words b
 
 **Silence between utterances.** `stop()` when the bot stops speaking pauses the estimate clock; the next `start()` resumes it where it paused rather than from the first beat, so binding the pair to a pipeline's per-utterance events is safe.
 
----
-
-## Problem 5: no alignment at all
+### No alignment at all
 
 Some stacks give you nothing usable. Give the clock an `estimate(beat)` in milliseconds and call `start()` when the bot starts speaking; it steps through the beats on that schedule.
 
@@ -235,58 +256,6 @@ createNarrationClock({
 ```
 
 It is wrong by however much the voice's real pace differs, and the error accumulates, so it is a degraded mode, not a default. The moment a spoken word reaches any beat, every pending estimate is cancelled and the estimate does not resume for the rest of the run: a clock that flips between evidence and guesswork produces a picture that stutters. When neither words nor an estimate apply, beatkeeper holds rather than inventing certainty.
-
----
-
-## Quick start
-
-```ts
-import { createNarrationClock } from "beatkeeper";
-
-const clock = createNarrationClock({
-  units: beats,
-  onAdvance: (index, source, beat) => render(beat),
-});
-
-client.on("botStartedSpeaking",  () => clock.start());
-client.on("botTtsText",          (e) => clock.feed(e.text));   // words, as they are heard
-client.on("botStoppedSpeaking",  () => clock.stop());
-client.on("userStartedSpeaking", () => clock.interrupt());
-```
-
-Or let an adapter do the same binding:
-
-```ts
-import { fromPipecat } from "beatkeeper/pipecat";
-const unbind = fromPipecat(client).bind(clock);
-```
-
-`onAdvance` runs synchronously inside `feed()`, so `clock.index` is already current when your handler returns.
-
-### React
-
-```tsx
-import { useNarrationClock } from "beatkeeper/react";
-import { fromPipecat } from "beatkeeper/pipecat";
-
-const adapter = useMemo(() => fromPipecat(client), [client]);
-const { index } = useNarrationClock(beats, { adapter });
-return <Map focus={beats[index]?.map} />;
-```
-
-One clock for the component's lifetime. A `beats` array that extends the previous one (same prose, more on the end) is appended to; any other array resets the clock.
-
-When the picture is driven by more than the index (Attaché keeps the clock inside a director object that also owns a spotlight and the graph), skip the hook and hold the clock in a ref:
-
-```tsx
-const clockRef = useRef<NarrationClock<Beat> | null>(null);
-useEffect(() => {
-  const clock = createNarrationClock({ units: beats, onAdvance: (i) => setIndex(i) });
-  clockRef.current = clock;
-  return () => clock.stop();
-}, []);
-// callbacks: clockRef.current?.feed(text)
-```
 
 ---
 
@@ -354,11 +323,19 @@ compose(...adapters)
 type Adapter<T> = { bind(clock: NarrationClock<T>): () => void };
 ```
 
-**Pipecat**: `fromPipecat(client, { source? })`. Binds `botStartedSpeaking`, `botStoppedSpeaking`, `userStartedSpeaking`, and one of the two audible-text signals: `botTtsText` (default; one event per word, needs alignment forwarding on the server's TTS service) or `botOutput` with `spoken_progress` (segment-scoped; only the newly heard suffix is fed). Never both; they carry the same words.
+### Pipecat
 
-**LiveKit**: `fromLiveKit(room, { agentIdentity? })`. Binds `participantAttributesChanged` (agent state `speaking` starts; leaving it stops), `transcriptionReceived` (the appended suffix of each growing segment), `activeSpeakersChanged` (the local participant speaking interrupts). Requires `use_tts_aligned_transcript=True` on the `AgentSession`. LiveKit has since moved transcripts to text streams on the `lk.transcription` topic; this adapter targets the event API and has not been run against a live room.
+`fromPipecat(client, { source? })`. Binds `botStartedSpeaking`, `botStoppedSpeaking`, `userStartedSpeaking`, and one of the two audible-text signals: `botTtsText` (default; one event per word, needs alignment forwarding on the server's TTS service) or `botOutput` with `spoken_progress` (segment-scoped; only the newly heard suffix is fed). Never both; they carry the same words.
 
-**ElevenLabs**: `fromElevenLabs()`, for the `/stream-input` text-to-speech socket and the v3 `/text-to-dialogue/multi-stream-input` socket. Alignment arrives with the audio, ahead of playback, so the adapter assembles words from `alignment.chars` and schedules each at its offset from `playbackStarted()`. That offset is not the wire value: `char_start_times_ms` restarts at zero in every message, so the adapter accumulates each message's span (last character's start plus its duration) as it goes, whether or not the message completed a word. The dialogue socket multiplexes contexts, so assembly is kept per `context_id`; its alignment is opt-in (`sync_alignment=true`). Tested against captures from both live sockets ([fixtures](test/fixtures)). The HTTP `with-timestamps` endpoint is a different shape and is not covered. By default words are scheduled with wall-clock timers from `playbackStarted()`, which drift from the audio whenever playback falls behind the wall: a buffering stall, a suspended `AudioContext`, a backgrounded tab whose timers are throttled. Pass `audioTime` to schedule against the audio clock instead: it returns the playhead's position in stream ms (for Web Audio, `(ctx.currentTime - firstSampleAt) * 1000`) and each word is fed as the playhead reaches it, so a stall holds the words with the audio. Use it whenever you own the playback pipeline; the default is for an `<audio>` element you cannot read a playhead from.
+### LiveKit
+
+`fromLiveKit(room, { agentIdentity? })`. Binds `participantAttributesChanged` (agent state `speaking` starts; leaving it stops), `transcriptionReceived` (the appended suffix of each growing segment), `activeSpeakersChanged` (the local participant speaking interrupts). Requires `use_tts_aligned_transcript=True` on the `AgentSession`.
+
+LiveKit has since moved transcripts to text streams on the `lk.transcription` topic; this adapter targets the event API and has not been run against a live room.
+
+### ElevenLabs
+
+`fromElevenLabs()`, for the `/stream-input` text-to-speech socket and the v3 `/text-to-dialogue/multi-stream-input` socket. Alignment arrives with the audio, ahead of playback, so the adapter assembles words from `alignment.chars` and schedules each at its offset from `playbackStarted()`.
 
 ```ts
 const el = fromElevenLabs();
@@ -370,9 +347,21 @@ audio.onplay = () => el.playbackStarted();
 const el = fromElevenLabs({ audioTime: () => (ctx.currentTime - firstSampleAt) * 1000 });
 ```
 
-**AG-UI**: `fromAgUi(agent, names?)`. AG-UI carries no audio timing, so units and spoken text travel as `Custom` events (`beat`, `beat.spoken`, `beat.started`, `beat.interrupted`) that the agent side must emit from its own TTS word stream. Not yet run against a live agent.
+Three things about it are worth knowing:
 
-**Your own.** Three calls: `clock.start()` when speech starts, `clock.feed(text)` when text is audible, `clock.stop()` when speech ends. `clock.interrupt()` on barge-in if the stack has one.
+- **The offset is not the wire value.** `char_start_times_ms` restarts at zero in every message, so the adapter accumulates each message's span (last character's start plus its duration) as it goes, whether or not the message completed a word.
+- **The dialogue socket multiplexes contexts**, so assembly is kept per `context_id`. Its alignment is opt-in (`sync_alignment=true`).
+- **Wall clock versus audio clock.** By default words are scheduled with wall-clock timers from `playbackStarted()`, which drift from the audio whenever playback falls behind the wall: a buffering stall, a suspended `AudioContext`, a backgrounded tab whose timers are throttled. Pass `audioTime` to schedule against the audio clock instead — it returns the playhead's position in stream ms, and each word is fed as the playhead reaches it, so a stall holds the words with the audio. Use it whenever you own the playback pipeline; the default is for an `<audio>` element you cannot read a playhead from.
+
+Tested against captures from both live sockets ([fixtures](test/fixtures)). The HTTP `with-timestamps` endpoint is a different shape and is not covered.
+
+### AG-UI
+
+`fromAgUi(agent, names?)`. AG-UI carries no audio timing, so units and spoken text travel as `Custom` events (`beat`, `beat.spoken`, `beat.started`, `beat.interrupted`) that the agent side must emit from its own TTS word stream. Not yet run against a live agent.
+
+### Your own
+
+Three calls: `clock.start()` when speech starts, `clock.feed(text)` when text is audible, `clock.stop()` when speech ends. `clock.interrupt()` on barge-in if the stack has one.
 
 ---
 
@@ -386,7 +375,7 @@ const el = fromElevenLabs({ audioTime: () => (ctx.currentTime - firstSampleAt) *
 
 ## Contributing
 
-Adapters, real payload fixtures, and bug reports with the word stream attached are the most useful things to send. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and what makes a report actionable — beatkeeper resolves an index from a stream of words, so a report without the stream is hard to act on, and the five problems above have five different fixes.
+Adapters, real payload fixtures, and bug reports with the word stream attached are the most useful things to send. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and what makes a report actionable — beatkeeper resolves an index from a stream of words, so a report without the stream is hard to act on, and the problems above have different fixes.
 
 Note the Node split: working on beatkeeper needs Node 22.12+ because `vitest@5` requires it, while the published package supports Node 18+. CI enforces both halves.
 
