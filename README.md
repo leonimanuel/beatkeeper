@@ -66,43 +66,11 @@ client.on("botStoppedSpeaking",  () => clock.stop());
 client.on("userStartedSpeaking", () => clock.interrupt());
 ```
 
-`fromPipecat` adds teardown and the [`bot-output` variant](#pipecat) on top of those four. The four are the entire contract, so a stack with no adapter binds the same calls to its own events:
-
-| Call | When |
-|---|---|
-| `clock.start()` | the bot starts speaking |
-| `clock.feed(text)` | text becomes **audible** — not when it is generated, and not when it is sent to the synthesiser |
-| `clock.stop()` | the bot stops speaking |
-| `clock.interrupt()` | the user barges in, where the stack reports it |
+`fromPipecat` adds teardown and the [`bot-output` variant](#pipecat) on top of those four. The four are the entire contract, so a stack with no adapter binds the same calls to its own events: `start()` when the bot starts speaking, `stop()` when it stops, `interrupt()` on barge-in where the stack reports one, and `feed(text)` when text becomes **audible** — not when it is generated, and not when it is sent to the synthesiser.
 
 `feed` carries the whole idea, and [Problem 1](#problem-1-every-stack-reports-audible-differently) is about how differently each stack signals that the moment has arrived. It accepts any chunk size — a word, a clause, a whole sentence — and `onAdvance` runs synchronously inside it, so `clock.index` is already current when the handler returns.
 
-[Adapters](#adapters) covers the other three and writing a new one.
-
-### React
-
-```tsx
-import { useNarrationClock } from "beatkeeper/react";
-import { fromPipecat } from "beatkeeper/pipecat";
-
-const adapter = useMemo(() => fromPipecat(client), [client]);
-const { index } = useNarrationClock(beats, { adapter });
-return <Map focus={beats[index]?.map} />;
-```
-
-One clock for the component's lifetime. A `beats` array that extends the previous one (same prose, more on the end) is appended to; any other array resets the clock.
-
-When the picture is driven by more than the index — Attaché keeps the clock inside a director object that also owns a spotlight and the graph — a ref holds the clock instead of the hook:
-
-```tsx
-const clockRef = useRef<NarrationClock<Beat> | null>(null);
-useEffect(() => {
-  const clock = createNarrationClock({ units: beats, onAdvance: (i) => setIndex(i) });
-  clockRef.current = clock;
-  return () => clock.stop();
-}, []);
-// callbacks: clockRef.current?.feed(text)
-```
+[Adapters](#adapters) covers the other three and writing a new one; [React](#react) has a hook.
 
 ---
 
@@ -124,15 +92,28 @@ beatkeeper turns whatever a stack knows about "audible" into one thing: an index
 
 ## Problem 1: every stack reports "audible" differently
 
-There is no standard `spoken_at` field. What exists is four different shapes, and one vendor can move between them across a change of model, endpoint, transport or SDK version. These are real payloads.
+There is no standard `spoken_at` field. What exists is four different shapes, and one vendor can move between them across a change of model, endpoint, transport or SDK version. Two real payloads, at opposite ends of the range.
 
-**Pipecat, one RTVI message per word, released at the word's own time on the bot's output clock:**
+**A word, already paced.** Pipecat's `bot-tts-text`, one RTVI message per word, released at the word's own time on the bot's output clock — audible when it arrives:
 
 ```json
 { "label": "rtvi-ai", "type": "bot-tts-text", "data": { "text": "Pokrovsk." } }
 ```
 
-**Pipecat, the same words as a sentence that fills in** (`bot-output`, one message per word boundary, keyed by segment):
+**Characters, timed, ahead of the ear.** The ElevenLabs websocket, where alignment arrives *with* the audio, seconds before playback, and **every message numbers its characters from zero** whatever stream time it covers:
+
+```json
+{ "audio": "<base64>",
+  "alignment": { "chars": ["G","o","o","d"," ","m"], "charStartTimesMs": [0,58,104,139,174,209], "charDurationsMs": [58,46,35,35,35,35] },
+  "isFinal": null }
+```
+
+Between those sit a transcript that grows in place, and no timing at all.
+
+<details>
+<summary>The other four payloads, for matching against a stream in hand</summary>
+
+**Pipecat `bot-output`**, the same words as a sentence that fills in: one message per word boundary, keyed by segment.
 
 ```json
 { "label": "rtvi-ai", "type": "bot-output", "data": {
@@ -141,13 +122,7 @@ There is no standard `spoken_at` field. What exists is four different shapes, an
     "spoken_progress": { "accumulated_text": "Fighting increased near", "remaining_text": " Pokrovsk." } } }
 ```
 
-**ElevenLabs websocket** (`/stream-input`, and the v3 dialogue socket in snake_case with a `context_id`). Character timings arrive *with* the audio, seconds ahead of playback, and **every message numbers its characters from zero** whatever stream time it covers:
-
-```json
-{ "audio": "<base64>",
-  "alignment": { "chars": ["G","o","o","d"," ","m"], "charStartTimesMs": [0,58,104,139,174,209], "charDurationsMs": [58,46,35,35,35,35] },
-  "isFinal": null }
-```
+**ElevenLabs v3 dialogue socket**, the same alignment shape in snake_case with a `context_id` per interleaved context.
 
 **ElevenLabs HTTP** (`/stream/with-timestamps`), a different shape again, in seconds, counted from the start of the request's audio rather than per chunk:
 
@@ -162,7 +137,7 @@ There is no standard `spoken_at` field. What exists is four different shapes, an
 { "id": "SG_7f3a", "text": "Fighting increased near", "final": false, "language": "en" }
 ```
 
-**Nothing.** AG-UI carries no audio timing at all, and neither does a TTS without alignment.
+</details>
 
 ### How beatkeeper handles it
 
@@ -241,13 +216,7 @@ Whole sentences to the synthesiser sound better, so beats are cut independently 
 
 Attaché does exactly this: each sentence goes to the synthesiser whole, and the beats are its clauses (`clauses()` below), so a callback like "you'd asked why OPEC+ was holding — now Saudi's had to shut its pipeline" turns the picture at the dash.
 
-Chunk size on the way in does not matter either. These are the same to the walk:
-
-```ts
-clock.feed("Further"); clock.feed("south");
-clock.feed("Further south");
-clock.feed("Further south, activity shifted toward Zaporizhzhia.");
-```
+Chunk size on the way in does not matter either: `feed("Further")` then `feed("south")`, `feed("Further south")`, and `feed("Further south, activity shifted toward Zaporizhzhia.")` are all the same to the walk.
 
 Beats can also arrive while the voice is already speaking: `clock.append(beat)` adds to the end of a running narration, which is what a model streaming its script needs.
 
@@ -390,6 +359,33 @@ Tested against captures from both live sockets ([fixtures](test/fixtures)). The 
 ### AG-UI
 
 `fromAgUi(agent, names?)`. AG-UI carries no audio timing, so units and spoken text travel as `Custom` events (`beat`, `beat.spoken`, `beat.started`, `beat.interrupted`) that the agent side must emit from its own TTS word stream. Not yet run against a live agent.
+
+---
+
+## React
+
+```tsx
+import { useNarrationClock } from "beatkeeper/react";
+import { fromPipecat } from "beatkeeper/pipecat";
+
+const adapter = useMemo(() => fromPipecat(client), [client]);
+const { index } = useNarrationClock(beats, { adapter });
+return <Map focus={beats[index]?.map} />;
+```
+
+One clock for the component's lifetime. A `beats` array that extends the previous one (same prose, more on the end) is appended to; any other array resets the clock.
+
+When the picture is driven by more than the index — Attaché keeps the clock inside a director object that also owns a spotlight and the graph — a ref holds the clock instead of the hook:
+
+```tsx
+const clockRef = useRef<NarrationClock<Beat> | null>(null);
+useEffect(() => {
+  const clock = createNarrationClock({ units: beats, onAdvance: (i) => setIndex(i) });
+  clockRef.current = clock;
+  return () => clock.stop();
+}, []);
+// callbacks: clockRef.current?.feed(text)
+```
 
 ---
 
