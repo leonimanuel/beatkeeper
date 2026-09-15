@@ -5,9 +5,9 @@ name: Release
 #   npm version <patch|minor|major>
 #   git push --follow-tags
 #
-# Auth: an NPM_TOKEN secret for the first publish, then a trusted publisher
-# configured on npmjs.com and no secret at all. See the Publish step for why
-# that order is forced rather than chosen.
+# Auth: a trusted publisher on npmjs.com, over OIDC. No secret on this repo,
+# and adding one back would break the publish rather than fix it. See the
+# Publish step.
 #
 # Running this from the Actions tab (workflow_dispatch) is ALWAYS a rehearsal:
 # every publishing step is gated on the ref being a tag, so a manual run
@@ -64,11 +64,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No registry-url here, deliberately. It makes setup-node write an
+      # .npmrc containing //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN},
+      # and with no NPM_TOKEN secret that expands to an empty token. npm then
+      # sees a credential that is configured but blank, fails ENEEDAUTH, and
+      # never reaches the OIDC path -- trusted publishing engages only when no
+      # credential is configured for the registry at all. registry.npmjs.org
+      # is the default, so nothing is lost by leaving it out.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
-          registry-url: https://registry.npmjs.org
 
       # Node 22 ships npm 10.x. Trusted publishing (OIDC, no token) needs
       # npm >= 11.5.1, and the version that ships with the runner will not do.
@@ -84,22 +90,22 @@ jobs:
           npm run clean && npm run build
           npm pack --dry-run
 
-      # Two auth paths, in the order they will be used over this package's life:
+      # Authenticates over OIDC against the trusted publisher configured for
+      # this package on npmjs.com. There is no token anywhere and no NPM_TOKEN
+      # secret on the repository; that absence is what makes this work, not a
+      # gap in the setup.
       #
-      #   1. Bootstrap. A trusted publisher cannot be configured for a package
-      #      that does not exist yet, so the very first publish needs the
-      #      NPM_TOKEN secret. --provenance still applies, so 0.1.0 is attested.
-      #   2. Afterwards. Configure the trusted publisher on npmjs.com, delete
-      #      the NPM_TOKEN secret, and this same step authenticates over OIDC
-      #      with no long-lived credential anywhere. Provenance then happens
-      #      automatically -- the flag below becomes a no-op rather than a lie.
+      # The bootstrap is history: a trusted publisher cannot be configured for
+      # a package that does not exist, so 0.1.0 was published with a temporary
+      # NPM_TOKEN and the secret was deleted afterwards. 0.1.1 was the first
+      # publish to take this path, and it failed ENEEDAUTH because the env
+      # binding and registry-url left over from that bootstrap were still here.
       #
-      # An absent NPM_TOKEN is the steady state, not a misconfiguration.
+      # --provenance is redundant under trusted publishing, which attests
+      # automatically. Kept so the intent survives if the auth path changes.
       - name: Publish to npm
         if: startsWith(github.ref, 'refs/tags/')
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/')
