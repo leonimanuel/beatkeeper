@@ -1,7 +1,7 @@
 {
   "name": "beatkeeper",
   "version": "0.1.0",
-  "description": "Resolve which unit of a scripted narration a TTS voice is speaking, from its word stream. Emits an index; renders nothing.",
+  "description": "Keeps a voice agent's interface on the words the listener is hearing, not the words the model wrote.",
   "license": "MIT",
   "author": "Leon Malisov",
   "repository": {

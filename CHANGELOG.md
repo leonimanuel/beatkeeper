@@ -9,6 +9,21 @@ live**. Pin a minor range until 1.0.
 
 ## [Unreleased]
 
+### Changed
+
+- The npm `description` now matches the README's opening line and the GitHub
+  repository description, which had drifted apart. No code change.
+
+### Documentation
+
+- README rewritten: the conceptual material is compressed from five "Problem"
+  sections into one, the API and its timing edge cases are documented in one
+  place rather than twice, and the adapters table states what each one has
+  actually been verified against.
+- The package is ESM-only. This was always true — `"type": "module"` with no
+  `require` condition on any subpath — but nothing said so, and a CommonJS
+  consumer on the supported Node 18 floor would have found out at runtime.
+
 ## [0.1.0] — 2026-09-13
 
 First public release.
