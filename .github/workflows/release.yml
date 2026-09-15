@@ -56,7 +56,13 @@ jobs:
   publish:
     needs: verify
     runs-on: ubuntu-latest
-    environment: npm
+    # No `environment:` here, deliberately. Naming one changes the OIDC
+    # subject claim from repo:OWNER/REPO:ref:refs/tags/vX to
+    # repo:OWNER/REPO:environment:NAME. npm matches that claim against the
+    # trusted publisher's optional environment field, so a job in an
+    # environment the npm config does not name fails to authenticate. The
+    # `npm` environment this job used to declare carried no protection rules,
+    # so it bought nothing and cost the match.
     permissions:
       contents: write
       # Required for npm provenance: mints the OIDC token npm attests with.
@@ -103,6 +109,24 @@ jobs:
       #
       # --provenance is redundant under trusted publishing, which attests
       # automatically. Kept so the intent survives if the auth path changes.
+      # Prints the identity npm will be matching against, so a failure to
+      # authenticate is diagnosable from the log instead of by re-tagging.
+      # Only the decoded claims are printed -- never the token itself.
+      - name: Show the OIDC subject npm will match
+        continue-on-error: true
+        run: |
+          payload=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm:registry.npmjs.org" \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
+                const t=JSON.parse(s).value.split('.')[1];
+                const c=JSON.parse(Buffer.from(t,'base64url'));
+                console.log(JSON.stringify({sub:c.sub,repository:c.repository,ref:c.ref,environment:c.environment},null,2));
+              })")
+          echo "$payload"
+          case "$payload" in
+            *"@"*) echo "NOTE: immutable subject format (repo created after 2026-07-15)." ;;
+          esac
+
       - name: Publish to npm
         if: startsWith(github.ref, 'refs/tags/')
         run: npm publish --provenance --access public
