@@ -9,6 +9,13 @@ live**. Pin a minor range until 1.0.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-09-14
+
+Documentation only. No runtime code changed between 0.1.0 and 0.1.1; the
+published `dist` is identical. This release exists because a package's README
+and description on npm are fixed at publish time, so corrected documentation
+only reaches the registry as a new version.
+
 ### Changed
 
 - The npm `description` now matches the README's opening line and the GitHub
@@ -114,5 +121,6 @@ state; without a stop, `start()` was a no-op for every turn after the first.
 `extendsNarrative` compares by prose, so a refetch yielding equal units as new
 objects no longer resets the picture mid-sentence.
 
-[Unreleased]: https://github.com/leonimanuel/beatkeeper/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/leonimanuel/beatkeeper/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/leonimanuel/beatkeeper/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/leonimanuel/beatkeeper/releases/tag/v0.1.0
