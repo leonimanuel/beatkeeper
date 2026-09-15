@@ -5,9 +5,9 @@ name: Release
 #   npm version <patch|minor|major>
 #   git push --follow-tags
 #
-# Auth: a trusted publisher on npmjs.com, over OIDC. No secret on this repo,
-# and adding one back would break the publish rather than fix it. See the
-# Publish step.
+# Auth: an NPM_TOKEN secret. Trusted publishing is configured but blocked by
+# npm/cli#9969 for repos on GitHub's immutable OIDC subject format. See the
+# Publish step for the detail and for how to switch back.
 #
 # Running this from the Actions tab (workflow_dispatch) is ALWAYS a rehearsal:
 # every publishing step is gated on the ref being a tag, so a manual run
@@ -70,17 +70,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # No registry-url here, deliberately. It makes setup-node write an
-      # .npmrc containing //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN},
-      # and with no NPM_TOKEN secret that expands to an empty token. npm then
-      # sees a credential that is configured but blank, fails ENEEDAUTH, and
-      # never reaches the OIDC path -- trusted publishing engages only when no
-      # credential is configured for the registry at all. registry.npmjs.org
-      # is the default, so nothing is lost by leaving it out.
+      # registry-url makes setup-node write an .npmrc binding the registry to
+      # ${NODE_AUTH_TOKEN}, which is what the publish step below needs. It is
+      # also why an empty NPM_TOKEN fails ENEEDAUTH rather than falling
+      # through to OIDC: npm reads a credential that is configured but blank.
+      # Harmless while a real token is present; the reason it was briefly
+      # removed is in the Publish step.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
+          registry-url: https://registry.npmjs.org
 
       # Node 22 ships npm 10.x. Trusted publishing (OIDC, no token) needs
       # npm >= 11.5.1, and the version that ships with the runner will not do.
@@ -96,19 +96,6 @@ jobs:
           npm run clean && npm run build
           npm pack --dry-run
 
-      # Authenticates over OIDC against the trusted publisher configured for
-      # this package on npmjs.com. There is no token anywhere and no NPM_TOKEN
-      # secret on the repository; that absence is what makes this work, not a
-      # gap in the setup.
-      #
-      # The bootstrap is history: a trusted publisher cannot be configured for
-      # a package that does not exist, so 0.1.0 was published with a temporary
-      # NPM_TOKEN and the secret was deleted afterwards. 0.1.1 was the first
-      # publish to take this path, and it failed ENEEDAUTH because the env
-      # binding and registry-url left over from that bootstrap were still here.
-      #
-      # --provenance is redundant under trusted publishing, which attests
-      # automatically. Kept so the intent survives if the auth path changes.
       # Prints the identity npm will be matching against, so a failure to
       # authenticate is diagnosable from the log instead of by re-tagging.
       # Only the decoded claims are printed -- never the token itself.
@@ -127,9 +114,30 @@ jobs:
             *"@"*) echo "NOTE: immutable subject format (repo created after 2026-07-15)." ;;
           esac
 
+      # Publishes with an NPM_TOKEN secret, NOT with the trusted publisher.
+      #
+      # Trusted publishing is configured on npmjs.com and still cannot work
+      # here. GitHub issues an immutable OIDC subject for repositories created
+      # after 2026-07-15 -- beatkeeper was created 2026-09-08 -- of the form
+      #
+      #   repo:OWNER@OWNER_ID/REPO@REPO_ID:ref:refs/tags/vX.Y.Z
+      #
+      # rather than repo:OWNER/REPO:ref:... . The registry does not match that
+      # format, so the token exchange fails and npm reports a generic
+      # ENEEDAUTH rather than a trusted-publishing diagnostic. npm/cli#9969.
+      # The format cannot be turned off for this repository.
+      #
+      # So the secret is needed again until that is fixed. When it is: delete
+      # the secret, drop registry-url above and the env binding below, and
+      # this returns to OIDC with no other change. The step above prints the
+      # subject, so whether the format has changed is readable from any run.
+      #
+      # --provenance is honoured on the token path -- 0.1.0 is attested.
       - name: Publish to npm
         if: startsWith(github.ref, 'refs/tags/')
         run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/')
