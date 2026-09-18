@@ -9,6 +9,15 @@ live**. Pin a minor range until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- `clauses(text, { maxChars })`: an over-long clause is cut again at its last
+  comma or colon inside the budget (else its last space), so a fixed-height
+  subtitle box never swallows the end of a sentence. Off by default.
+- A `prepare` script that builds `dist`, so a consumer pinned to a git sha
+  (attache-web, until the next npm release) gets a built package again; it
+  went missing in the publish restructuring. Registry installs are unaffected.
+
 ## [0.1.1] — 2026-09-14
 
 Documentation only. No runtime code changed between 0.1.0 and 0.1.1; the
