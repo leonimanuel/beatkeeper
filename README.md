@@ -203,7 +203,7 @@ onTtsText((text) => { for (const k of captions.feed(text)) show(captions.unit(k)
 ### Helpers
 
 ```ts
-clauses(text)                             // sentence → caption-sized pieces: at . ! ? — – ; and ", so"
+clauses(text, { maxChars? })              // sentence → caption-sized pieces: at . ! ? — – ; and ", so"; then at commas to fit a box
 tokenize(text)                            // lowercase, letters and digits only, any script
 withHints(clock, { baseMs?, perWordMs? }) // late-sync wrapper for a source that runs early
 compose(...adapters)                      // bind several adapters to one clock; returns a single unbind
