@@ -19,7 +19,10 @@ export type WalkOptions = {
   /**
    * Applied to every token, script and spoken alike, after `tokenize`. For
    * number words, stemming, or a language whose inflections defeat the
-   * prefix rule. Identity by default.
+   * prefix rule. Identity by default. Return "" to drop a token from both
+   * sides: what a voice says otherwise than the script (a number read digit
+   * by digit, "115" spoken "1 1 5"; a unit spelled out, "mph" spoken "miles an
+   * hour") then never goes unplaced, nor re-anchors the walk further on.
    */
   normalize?: (token: string) => string;
 };
@@ -87,7 +90,7 @@ export class SpokenWalk<T = unknown> {
 
   /** `tokenize`, then the caller's normaliser. */
   tokens(text: string): string[] {
-    return tokenize(text).map(this.opts.normalize);
+    return tokenize(text).map(this.opts.normalize).filter(Boolean);
   }
 
   /** Add a unit to the end. The sequence is trusted as given, repeats included. */
