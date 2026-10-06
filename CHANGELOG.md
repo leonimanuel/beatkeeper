@@ -9,6 +9,8 @@ live**. Pin a minor range until 1.0.
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-10-06
+
 ### Added
 
 - `clauses(text, { maxChars })`: an over-long clause is cut again at its last
@@ -17,6 +19,16 @@ live**. Pin a minor range until 1.0.
 - A `prepare` script that builds `dist`, so a consumer pinned to a git sha
   (attache-web, until the next npm release) gets a built package again; it
   went missing in the publish restructuring. Registry installs are unaffected.
+
+### Fixed
+
+- **A token the normaliser returns as `""` is dropped**, from the script and the
+  speech alike. A caller can now leave out what a voice says otherwise than the
+  script: numbers read digit by digit ("115" spoken as "1 1 5"), unit words a
+  speech normaliser spells out ("mph" as "miles an hour"). Before, the empty
+  tokens stayed in both sequences, and digits the walk could not place made it
+  decide a unit had ended. One briefing reached its last unit 46 s early. An
+  identity normaliser returns no empty tokens, so nothing changes without one.
 
 ## [0.1.1] — 2026-09-14
 
